@@ -1,0 +1,442 @@
+
+module axi4_lite_command_executor {
+    gen int ADDR_WIDTH = 64
+    gen int AXI_WIDTH = 32
+
+    axi4_lite_writer #(ADDR_WIDTH, AXI_WIDTH) writer
+    axi4_lite_reader #(ADDR_WIDTH, AXI_WIDTH) reader
+
+    domain axi4_lite
+    output int#(FROM: 0, TO: 1 << ADDR_WIDTH)    awaddr'0= writer.awaddr
+    output bool[3]                               awprot  = writer.awprot
+    output bool                                  awvalid = writer.awvalid
+    input  bool                                  awready
+    output bool[AXI_WIDTH]                       wdata   = writer.wdata
+    output bool[AXI_WIDTH / 8]                   wstrb   = writer.wstrb
+    output bool                                  wvalid  = writer.wvalid
+    input bool                                   wready
+    input bool[2]                                bresp
+    input bool                                   bvalid
+    output bool                                  bready  = writer.bready
+    writer.awready = awready
+    writer.wready = wready
+    writer.bresp = bresp
+    writer.bvalid = bvalid
+
+    output int#(FROM: 0, TO: 1 << ADDR_WIDTH)    araddr'0= reader.araddr
+    output bool[3]                               arprot  = reader.arprot
+    output bool                                  arvalid = reader.arvalid
+    input bool                                   arready
+    input bool[AXI_WIDTH]                        rdata
+    input bool[2]                                rresp
+    input bool                                   rvalid
+    output bool                                  rready  = reader.rready
+    reader.arready = arready
+    reader.rdata = rdata
+    reader.rresp = rresp
+    reader.rvalid = rvalid
+
+    domain user
+    // Read must happen before write
+    state bool addr_should_be_read
+    state bool addr_should_be_polled
+    state bool addr_should_be_written
+    state int#(FROM: 0, TO: 1 << ADDR_WIDTH) stored_addr
+    state bool[32] stored_data
+    state bool[32] stored_mask
+
+    state bool is_outstanding_read
+    gen int MAX_WRITES = 64
+    state int#(FROM: 0, TO: MAX_WRITES) num_outstanding_writes
+    bool any_outstanding_io = is_outstanding_read | num_outstanding_writes != 0
+    
+    output bool io_is_active = addr_should_be_read | addr_should_be_polled | addr_should_be_written | any_outstanding_io
+    output bool may_submit_command = !addr_should_be_polled & !addr_should_be_read & !addr_should_be_written
+
+    action write : int#(FROM: 0, TO: 1 << ADDR_WIDTH) write_addr, bool[32] write_data {
+        stored_addr = write_addr
+        stored_data = write_data
+        addr_should_be_written = true
+    }
+    action mask_write : int#(FROM: 0, TO: 1 << ADDR_WIDTH) mask_write_addr, bool[32] mask_write_mask, bool[32] mask_write_data {
+        stored_addr = mask_write_addr
+        stored_data = mask_write_data
+        stored_mask = mask_write_mask
+
+        addr_should_be_read = true
+        addr_should_be_written = true
+    }
+    action mask_poll : int#(FROM: 0, TO: 1 << ADDR_WIDTH) mask_poll_addr, bool[32] mask_poll_mask, bool[32] expected {
+        stored_addr = mask_poll_addr
+        stored_data = expected
+        stored_mask = mask_poll_mask
+
+        addr_should_be_read = true
+        addr_should_be_polled = true
+    }
+
+    int should_add_outstanding_write = 0
+    int should_subtract_outstanding_write = 0
+    when addr_should_be_read {
+        when !any_outstanding_io & reader.may_read {
+            reader.read(stored_addr)
+            is_outstanding_read = true
+        }
+    } else when addr_should_be_written {
+        when writer.may_write & num_outstanding_writes != MAX_WRITES - 1 {
+            writer.write(stored_addr, stored_data, 4'b1111)
+            should_add_outstanding_write = 1
+            // We can immediately set the "should write" to false,
+            // and return before the write is committed,
+            // to process adjacent naked writes more quickly
+            addr_should_be_written = false
+        }
+    }
+
+    when reader.read_available : bool[32] read_data, bool[2] _resp {
+        reader.take_read()
+        is_outstanding_read = false
+
+        when addr_should_be_polled {
+            when BitsToUInt(read_data & stored_mask) == BitsToUInt(stored_data) {
+                // polling done
+                addr_should_be_read = false
+                addr_should_be_polled = false
+            } else {
+                // leave addr_should_be_read == true
+                // Automatic repoll
+            }
+        } else {
+            stored_data = read_data & !stored_mask | stored_data
+            addr_should_be_read = false
+        }
+    }
+
+    when writer.write_resp_available : bool[2] _resp {
+        writer.take_write_resp()
+        should_subtract_outstanding_write = 1
+    }
+
+    num_outstanding_writes = num_outstanding_writes + should_add_outstanding_write - should_subtract_outstanding_write mod MAX_WRITES
+
+    domain reset
+    action rst {
+        reader.rst()
+        writer.rst()
+        addr_should_be_read = false
+        addr_should_be_polled = false
+        addr_should_be_written = false
+        is_outstanding_read = false
+        num_outstanding_writes = 0
+    }
+}
+
+module AIEngineReflasher {
+    clock aclk
+    input bool aresetn
+    
+    gen int AXI_WIDTH = 32
+
+    gen int CTRL_AXI_WIDTH = 64
+    gen int CTRL_ADDR_WIDTH = 12
+    gen int MEM_ADDR_WIDTH = 64
+
+    tapasco_ctrl_slave#(NUM_INPUT_REGS: 5, ADDR_WIDTH: CTRL_ADDR_WIDTH, AXI_WIDTH: CTRL_AXI_WIDTH) ctrl
+
+    // Export AXI4-Lite interface
+    domain axi_control
+    input  int#(FROM: 0, TO: 1 << CTRL_ADDR_WIDTH)    s_axi_control_awaddr
+    input  bool                     s_axi_control_awvalid
+    output bool                     s_axi_control_awready = ctrl.awready
+    input  bool[CTRL_AXI_WIDTH]     s_axi_control_wdata
+    input  bool[CTRL_AXI_WIDTH / 8] s_axi_control_wstrb
+    input  bool                     s_axi_control_wvalid
+    output bool                     s_axi_control_wready  = ctrl.wready
+    output bool[2]                  s_axi_control_bresp   = ctrl.bresp
+    output bool                     s_axi_control_bvalid  = ctrl.bvalid
+    input  bool                     s_axi_control_bready
+    input  int#(FROM: 0, TO: 1 << CTRL_ADDR_WIDTH)    s_axi_control_araddr
+    input  bool                     s_axi_control_arvalid
+    output bool                     s_axi_control_arready = ctrl.arready
+    output bool[CTRL_AXI_WIDTH]     s_axi_control_rdata   = ctrl.rdata
+    output bool[2]                  s_axi_control_rresp   = ctrl.rresp
+    output bool                     s_axi_control_rvalid  = ctrl.rvalid
+    input  bool                     s_axi_control_rready
+    ctrl.awaddr  =         s_axi_control_awaddr
+    ctrl.awvalid =         s_axi_control_awvalid
+    ctrl.wdata   =         s_axi_control_wdata
+    ctrl.wstrb   =         s_axi_control_wstrb
+    ctrl.wvalid  =         s_axi_control_wvalid
+    ctrl.bready  =         s_axi_control_bready
+    ctrl.araddr  =         s_axi_control_araddr
+    ctrl.arvalid =         s_axi_control_arvalid
+    ctrl.rready  =         s_axi_control_rready
+
+    domain tapasco_intr
+    output bool intr = ctrl.intr
+
+    axi4_lite_command_executor basic_commands
+
+    bool[64] ctrl_bits = ctrl.input_regs[2]
+
+    domain axi4_small_interface
+    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) small_axil_awaddr'0= basic_commands.awaddr
+    output bool[3]                                small_axil_awprot'0= ctrl_bits[0:3]
+    output bool                                   small_axil_awvalid = basic_commands.awvalid
+    input  bool                                   small_axil_awready
+    output bool[AXI_WIDTH]                        small_axil_wdata   = basic_commands.wdata
+    output bool[AXI_WIDTH / 8]                    small_axil_wstrb   = basic_commands.wstrb
+    output bool                                   small_axil_wvalid  = basic_commands.wvalid
+    input bool                                    small_axil_wready
+    input bool[2]                                 small_axil_bresp
+    input bool                                    small_axil_bvalid
+    output bool                                   small_axil_bready  = basic_commands.bready
+    basic_commands.awready = small_axil_awready
+    basic_commands.wready  = small_axil_wready
+    basic_commands.bresp   = small_axil_bresp
+    basic_commands.bvalid  = small_axil_bvalid
+
+    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) small_axil_araddr'0= basic_commands.araddr
+    output bool[3]                                small_axil_arprot'0= ctrl_bits[4:7]
+    output bool                                   small_axil_arvalid = basic_commands.arvalid
+    input bool                                    small_axil_arready
+    input bool[AXI_WIDTH]                         small_axil_rdata
+    input bool[2]                                 small_axil_rresp
+    input bool                                    small_axil_rvalid
+    output bool                                   small_axil_rready  = basic_commands.rready
+    basic_commands.arready = small_axil_arready
+    basic_commands.rdata   = small_axil_rdata
+    basic_commands.rresp   = small_axil_rresp
+    basic_commands.rvalid  = small_axil_rvalid
+
+
+    axi4_burst_reader#(AXI_WIDTH, ADDR_WIDTH: MEM_ADDR_WIDTH, ADDR_ALIGN: 4, COUNT_TO: pow2#(E: 64), MAX_IN_FLIGHT: 256) bulk_reader
+    axi4_burst_writer#(ADDR_WIDTH: MEM_ADDR_WIDTH, ADDR_ALIGN: 4) bulk_writer
+
+    domain axi4_bulk_interface
+    output bool                     bulk_axi_awvalid'0 = bulk_writer.awvalid
+    input  bool                     bulk_axi_awready
+    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH)     bulk_axi_awaddr = bulk_writer.awaddr
+    output int#(FROM: 0, TO: 256)   bulk_axi_awlen = bulk_writer.awlen
+    output int#(FROM: 0, TO: 8)     bulk_axi_awsize  = bulk_writer.awsize
+    output bool[3]                  bulk_axi_awprot = ctrl_bits[8:11]
+    output bool[2]                  bulk_axi_awburst = ctrl_bits[12:14]
+    output bool[4]                  bulk_axi_awcache = ctrl_bits[16:20]
+    output bool                     bulk_axi_awlock = ctrl_bits[20]
+    output int#(FROM: 0, TO: 16)    bulk_axi_awqos = BitsToUInt(ctrl_bits[24:28])
+    output int#(FROM: 0, TO: 16)    bulk_axi_awregion = BitsToUInt(ctrl_bits[28:32])
+    output bool                     bulk_axi_wvalid = bulk_writer.wvalid
+    input  bool                     bulk_axi_wready
+    output bool[AXI_WIDTH]          bulk_axi_wdata = bulk_writer.wdata
+    output bool[AXI_WIDTH / 8]      bulk_axi_wstrb = bulk_writer.wstrb
+    output bool                     bulk_axi_wlast = bulk_writer.wlast
+    input  bool                     bulk_axi_bvalid
+    output bool                     bulk_axi_bready = bulk_writer.bready
+    input  bool[2]                  bulk_axi_bresp
+    bulk_writer.awready =           bulk_axi_awready
+    bulk_writer.wready =            bulk_axi_wready
+    bulk_writer.bvalid =            bulk_axi_bvalid
+    bulk_writer.bresp =             bulk_axi_bresp
+
+    output bool                     bulk_axi_arvalid'0 = bulk_reader.arvalid
+    input  bool                     bulk_axi_arready
+    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH)     bulk_axi_araddr = bulk_reader.araddr
+    output int#(FROM: 0, TO: 256)   bulk_axi_arlen = bulk_reader.arlen
+    output int#(FROM: 0, TO: 8)     bulk_axi_arsize  = bulk_reader.arsize
+    output bool[3]                  bulk_axi_arprot = ctrl_bits[32:35]
+    output bool[2]                  bulk_axi_arburst = ctrl_bits[36:38]
+    output bool[4]                  bulk_axi_arcache = ctrl_bits[40:44]
+    output bool                     bulk_axi_arlock = ctrl_bits[44]
+    output int#(FROM: 0, TO: 16)    bulk_axi_arqos = BitsToUInt(ctrl_bits[48:52])
+    output int#(FROM: 0, TO: 16)    bulk_axi_arregion = BitsToUInt(ctrl_bits[52:56])
+    input  bool                     bulk_axi_rvalid
+    output bool                     bulk_axi_rready = bulk_reader.rready
+    input  bool[AXI_WIDTH]          bulk_axi_rdata
+    input  bool[2]                  bulk_axi_rresp
+    input  bool                     bulk_axi_rlast
+    bulk_reader.arready =           bulk_axi_arready
+    bulk_reader.rvalid =            bulk_axi_rvalid
+    bulk_reader.rdata =             bulk_axi_rdata
+    bulk_reader.rresp =             bulk_axi_rresp
+    bulk_reader.rlast =             bulk_axi_rlast
+    bool _ = bulk_reader.may_request_new_read
+
+    gen int READ_COMMAND_HEADER = 0
+    gen int READING_LONG_FORM_LENGTH = 1
+    gen int READ_ARGUMENTS = 2
+    gen int EXECUTE_COMMAND = 3
+    gen int DMA_WRITING = 4
+    gen int DMA_FINISHING = 5
+    state int cur_state
+
+    gen int COMMAND_MASK_POLL = 1
+    gen int COMMAND_MASK_WRITE = 2
+    gen int COMMAND_WRITE = 3
+    gen int COMMAND_DELAY = 4
+    gen int COMMAND_DMA_WRITE = 5
+    gen int COMMAND_MASK_POLL64 = 6
+    gen int COMMAND_MASK_WRITE64 = 7
+    gen int COMMAND_WRITE64 = 8
+    gen int COMMAND_NOP = 17
+    state int cur_command
+    state int cur_last_arg
+    state int#(FROM: 0, TO: 5) cur_argument_index
+    state bool[32][5] argument_regs
+    
+    bool[64] addr64_bits
+    addr64_bits[32:64] = argument_regs[0]
+    addr64_bits[0:32] = argument_regs[1]
+    int addr64 = BitsToUInt(addr64_bits)
+
+
+    state int dma_payload_remaining
+    
+    state bool last_command_is_being_executed
+    
+    when ctrl.start {
+        int command_data_addr = BitsToUInt(ctrl.input_regs[0])
+        int command_num_transfers = BitsToUInt(ctrl.input_regs[1])
+        bulk_reader.request_new_read(command_data_addr, command_num_transfers, [])
+    }
+
+    FWFT#(DEPTH: 512) command_fifo
+
+    
+    bulk_reader.ready_for_lots_of_data = command_fifo.may_push
+    when bulk_reader.chunk_valid :
+        bool[AXI_WIDTH][1] elements,
+        int#(FROM: 0, TO: 2) _chunk_length,
+        int#(FROM: 0, TO: 1) _chunk_offset,
+        bool last,
+        bool[0] _extra_data_out {
+        bool[33] packed
+        packed[0:32] = elements[0]
+        packed[32] = last
+        command_fifo.push(packed)
+    }
+    
+    when last_command_is_being_executed & !basic_commands.io_is_active & cur_state == READ_COMMAND_HEADER {
+        ctrl.finish(64'h00000000)
+        last_command_is_being_executed = false
+    }
+
+    when command_fifo.pop_available : bool[33] packed {
+        bool[AXI_WIDTH] elem = packed[0:32]
+        bool last = packed[32]
+        when last {
+            last_command_is_being_executed = true
+        }
+        when cur_state == READ_COMMAND_HEADER {
+            int command_opcode = BitsToUInt(elem[0:8])
+            int payload_len = BitsToUInt(elem[16:24])
+
+            int num_args
+            when command_opcode == COMMAND_MASK_POLL | command_opcode == COMMAND_MASK_WRITE | command_opcode == COMMAND_WRITE  { // is 32-bit
+                num_args = IntNarrow#(FROM: 0, TO: 6)(payload_len + 1)
+                cur_argument_index = 1
+                argument_regs[0] = 32'h00000000 // For 32-bit commands, we overwrite arguments_regs[0] with 0, and immediately jump to arg 1, that way we reuse the paths for 64-bit commands
+                cur_command = command_opcode + (COMMAND_WRITE64 - COMMAND_WRITE)
+            } else {
+                cur_argument_index = 0
+                cur_command = command_opcode
+                when command_opcode == COMMAND_DMA_WRITE {
+                    num_args = 2
+                    dma_payload_remaining = payload_len - 2
+                } else {
+                    num_args = IntNarrow#(FROM: 0, TO: 6)(payload_len)
+                }
+            }
+
+            when payload_len == 0 {
+                cur_state = EXECUTE_COMMAND
+            } else {
+                cur_last_arg = IntNarrow#(FROM: 0, TO: 5)(num_args-1)
+
+                when payload_len == 255 {
+                    // require double-length block
+                    cur_state = READING_LONG_FORM_LENGTH
+                } else {
+                    cur_state = READ_ARGUMENTS
+                }
+            }
+            command_fifo.pop()
+        }
+        when cur_state == READING_LONG_FORM_LENGTH {
+            dma_payload_remaining = BitsToUInt(elem) - 2
+            
+            cur_state = READ_ARGUMENTS
+            
+            command_fifo.pop()
+        }
+        when cur_state == READ_ARGUMENTS {
+            argument_regs[cur_argument_index] = elem
+
+            when cur_argument_index < cur_last_arg {
+                cur_argument_index = IntNarrow#(FROM: 0, TO: 5)(cur_argument_index + 1)
+            } else {
+                cur_state = EXECUTE_COMMAND
+            }
+            command_fifo.pop()
+        }
+    }
+
+    when cur_state == EXECUTE_COMMAND {
+        when cur_command == COMMAND_NOP | cur_command == COMMAND_DELAY { // Implement Delay as a NOP
+            cur_state = READ_COMMAND_HEADER
+        }
+
+        when basic_commands.may_submit_command {
+            when cur_command == COMMAND_WRITE64 {
+                basic_commands.write(addr64, argument_regs[2])
+                cur_state = READ_COMMAND_HEADER
+            }
+            when cur_command == COMMAND_MASK_WRITE64 {
+                basic_commands.mask_write(addr64, argument_regs[2], argument_regs[3])
+                cur_state = READ_COMMAND_HEADER
+            }
+            when cur_command == COMMAND_MASK_POLL64 {
+                basic_commands.mask_poll(addr64, argument_regs[2], argument_regs[3])
+                cur_state = READ_COMMAND_HEADER
+            }
+        }
+
+        when bulk_writer.may_request_new_write {
+            when cur_command == COMMAND_DMA_WRITE {
+                when dma_payload_remaining == 0 {
+                    cur_state = READ_COMMAND_HEADER
+                } else {
+                    bulk_writer.request_new_write(addr64)
+                    cur_state = DMA_WRITING
+                }
+            }
+        }
+    }
+
+    when cur_state == DMA_WRITING & bulk_writer.may_write {
+        when command_fifo.pop_available : bool[33] dma_data {
+            bool is_last = dma_payload_remaining == 1
+            bulk_writer.write([dma_data[0:32]], 1, 0, is_last)
+            command_fifo.pop()
+
+            when is_last {
+                cur_state = DMA_FINISHING // Wait until the write has been committed before continuing to next command
+            } else {
+                dma_payload_remaining = dma_payload_remaining - 1 mod 1 << 32
+            }
+        }
+    }
+    when bulk_writer.write_has_been_committed {
+        // cur_state should be DMA_FINISHING
+        cur_state = READ_COMMAND_HEADER
+    }
+
+    when !aresetn {
+        basic_commands.rst()
+        bulk_reader.rst()
+        bulk_writer.rst()
+        command_fifo.rst()
+        ctrl.rst()
+        cur_state = READ_COMMAND_HEADER
+        last_command_is_being_executed = false
+    }
+}

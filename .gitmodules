@@ -1,0 +1,9 @@
+[submodule "tapasco-examples"]
+	path = tapasco-examples
+	url = https://github.com/esa-tu-darmstadt/tapasco-examples.git
+[submodule "sus-xrt"]
+	path = sus-xrt
+	url = https://github.com/pc2/sus-xrt.git
+[submodule "sus-tapasco"]
+	path = sus-tapasco
+	url = git@github.com:sus-hdl/sus-tapasco.git
