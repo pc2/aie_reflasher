@@ -1,11 +1,14 @@
 #include <iostream>
 
+#include <boost/program_options.hpp>
 #include <chrono>
-#include <string>
 #include <tapasco.hpp>
+#include <string>
 #include <fstream>
+#include <vector>
 
-#define PE_NAME "esa.informatik.tu-darmstadt.de:user:AIEngineReflasher:1.0"
+#define PE_NAME "pc2-sus-experiments:sus-xrt:AIEngineReflasher:1.0"
+//#define PE_NAME "esa.informatik.tu-darmstadt.de:user:AIEngineReflasher:1.0"
 
 int main(int argc, char **argv) {
         const char* reconfig_file_path = argv[1];
@@ -31,21 +34,19 @@ int main(int argc, char **argv) {
 
         // instantiate Tapasco (assume only one FPGA connected to this host)
         tapasco::Tapasco tap;
+	//tapasco::Tapasco tap = tapasco::Tapasco(tapasco::tlkm_access::TlkmAccessExclusive, 2);
         tapasco::PEId peId = tap.get_pe_id(PE_NAME);
 
-        // define streams
-        
         constexpr size_t HM_ADDR = 0;
         tap.copy_to(reflash_data, HM_ADDR, num_elements * 4);
-
 
         unsigned int cycles = 0;
         tapasco::RetVal<unsigned int> ret(&cycles);
 
         // launch PE task
-        std::cout <<  "Launch PE task" << std::endl;
+        std::cout <<  "Launch PE task " << num_elements << std::endl;
         auto start = std::chrono::high_resolution_clock::now();
-        auto task = tap.launch(peId, ret, HM_ADDR, num_elements);
+        auto task = tap.launch(peId, ret, HM_ADDR + 0x10000000000, num_elements, 0x00031000031111);
 
         // wait for PE completion
         task();
@@ -57,3 +58,4 @@ int main(int argc, char **argv) {
 
         return 0;
 }
+
