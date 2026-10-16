@@ -37,24 +37,36 @@ namespace eval aie_reflasher_ipi {
   proc lpd_port {{args {}}} {
     set cips [get_bd_cells /host/versal_cips_0]
     set ic   [get_bd_cells /arch/target_ip_01_000/join_bulk_and_small_ic]
-    set design_aclk    [tapasco::subsystem::get_port "design" "clk"]
 
-    # VERIFY: parameter names (PG352). 32-bit keeps the AXI-Lite master simple.
+    # S_AXI_LPD is a direct PL-to-PS port. Do NOT route it through the NoC: a NoC
+    # output toward it gets a 1 GB PL_LO aperture (0x201_8000_0000) that can never
+    # intersect the fixed LPD addresses, and the NoC decodes 0xFFxxxxxx to the PS
+    # NSU in hardware anyway. Vivado then excludes every LPD segment (BD 41-1743).
     set_property -dict [list CONFIG.PS_PMC_CONFIG { \
       PS_USE_S_AXI_LPD 1 PS_S_AXI_LPD_DATA_WIDTH 32 \
     }] $cips
 
-    # Second master port on the join IC; Vivado's address decode sends the LPD
-    # segments (0xFF000000..0xFFFFFFFF) here and the rest to M00 (NoC).
+    # Second master port on the join IC; Vivado decodes the LPD segments
+    # (0xFF000000..0xFFFFFFFF) to it and everything else to M00 (NoC).
     set_property CONFIG.NUM_MI 2 $ic
     connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $ic/M01_AXI] \
                                              [get_bd_intf_pins $cips/S_AXI_LPD]
-    # VERIFY: clock pin name s_axi_lpd_aclk (reference design uses it). The IC
-    # already runs on the design clock; drive the port with the same clock.
-    connect_bd_net -boundary_type upper $design_aclk [get_bd_pins $cips/s_axi_lpd_aclk]
-
+    connect_bd_net -boundary_type upper [get_bd_nets -of_objects [get_bd_pins $ic/aclk]] \
+                                        [get_bd_pins $cips/s_axi_lpd_aclk]
     assign_bd_address -quiet
-    puts "aie_reflasher_ipi: S_AXI_LPD connected to join_bulk_and_small_ic/M01_AXI"
+
+    # Keep all IPI traffic on ONE path: the PE posts writes without waiting for
+    # responses, so a TRIG write via the NoC could overtake buffer writes via the
+    # LPD port. Exclude the NoC (NOC_PMC_AXI_0) copies of every LPD-range segment.
+    foreach sp [list /arch/target_ip_01_000/internal_target_ip_01_000/small_axil \
+                     /arch/target_ip_01_000/internal_target_ip_01_000/bulk_axi] {
+      foreach seg [get_bd_addr_segs -quiet -of_objects [get_bd_addr_spaces $sp] \
+                     -filter {NAME =~ "*NOC_PMC_AXI_0*"}] {
+        set off [get_property OFFSET $seg]
+        if {$off >= 0xFF000000 && $off < 0x100000000} { exclude_bd_addr_seg $seg }
+      }
+    }
+    puts "aie_reflasher_ipi: S_AXI_LPD driven from join_bulk_and_small_ic/M01_AXI"
     return $args
   }
 }
