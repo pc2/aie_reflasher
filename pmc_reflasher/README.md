@@ -218,11 +218,33 @@ five register writes online, zero code on the card.
 
 Why this one: your `AddressSegments.csv` shows the PE's `small_axil`/`bulk_axi` masters
 already reach the LPD through `NOC_PMC_AXI_0` (`psv_ipi_pmc` at `0xFF320000`,
-`psv_ipi_psm`, OCM, TCM, PSM, ADMA ...). What is missing are the per-channel blocks
-`psv_ipi_0..5` and the message RAM `psv_ipi_buffer` (`0xFF3F0000`). They are absent
-because Tapasco never enables an IPI channel in the CIPS; `PS_GEN_IPI5_ENABLE 1` makes them
-appear (confirmed in AMD's `vck190_axi_cci_bd.tcl`, whose enabled IPIs list exactly those
-segment names). After that, the PE can run this 9-command stream unchanged. The PE ignores AXI error
+`psv_ipi_psm`, OCM, TCM, PSM, ADMA ...). `PS_GEN_IPI5_ENABLE 1` adds `psv_ipi_5`
+(`0xFF380000`) for those masters (confirmed in your rebuild).
+
+**The IPI message RAM (`psv_ipi_buffer`, `0xFF3F0000`, 4 KiB) is a different story.**
+Vivado's CIPS model exposes it only on the direct PL-to-PS slave ports (`S_AXI_LPD`,
+`S_AXI_GP2`), never on the NoC-side ports. AMD's own `vck190_axi_cci_bd.tcl` shows exactly
+that: `psv_ipi_buffer` on `S_AXI_LPD`/`S_AXI_GP2`, while the `NOC_FPD_CCI_*` masters get
+`psv_ipi_0..6` but no buffer. No CIPS switch changes this. Two ways around it:
+
+1. *Try without the segment.* PG313 says the PMC, LPD and FPD regions have fixed address
+   decoders in every NoC NMU, so a write to `0xFF3F0E40` should still be routed to the PMC
+   NSU and on to the IPI RAM. What may stop it is the join SmartConnect in front of the
+   NoC, which returns DECERR for addresses outside its decoded segments (PG247 does not
+   say whether a single-MI SmartConnect skips that check). The stream's first poll (read
+   back of the request word) tells you immediately; the ILAs you already have on the join
+   IC's `M00_AXI` show the BRESP/RRESP if it hangs.
+2. *Give the PE a direct LPD port.* `tapasco/enable_ipi5.tcl` (`lpd_port`) enables
+   `S_AXI_LPD` on the CIPS and adds it as a second master on the join SmartConnect.
+   Vivado then decodes `0xFFxxxxxx` to that port with `psv_ipi_buffer` as a proper segment,
+   and everything else keeps going through the NoC. One rebuild.
+
+The Slave Boot Interface (`psv_pmc_slave_boot` / `_stream`, both already in your map) was
+the other candidate, but the 2023.1 PLM only arms the SBI data-ready interrupt after an
+SBI load or a PLM update, so a PL master would also have to poke the PMC GIC enables. Not
+worth it while the IPI route is open.
+
+After that, the PE can run this 9-command stream unchanged. The PE ignores AXI error
 responses, so the readback poll and the sentinel make an unreachable path hang the PE
 instead of passing silently:
 
