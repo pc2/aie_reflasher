@@ -66,8 +66,14 @@ to configure the AIE at boot.
    - at run time over JTAG: `xsdb firmware/load_firmware.tcl .../aie_reflasher.elf`
      (needs the micro-USB cable and `hw_server`).
 4. **Build the partial PDI** for the design you want to switch to:
-   `tools/make_aie_pdi.sh ../libadf_b.a aie_b.pdi` (also accepts a directory holding the
-   six `aie.cdo.*.bin`, e.g. `../tests/AIEngineReflasher/adf_b`).
+   `tools/make_aie_pdi.sh ../libadf_b.a aie_b.pdi --like <full Tapasco PDI>` (also accepts
+   a directory holding the six `aie.cdo.*.bin`, e.g. `../tests/AIEngineReflasher/adf_b`).
+   `--like` copies `id_code`/`extended_id_code` from a PDI that already runs on the card.
+   The PLM compares the header IDCODE exactly against the silicon (`XLoader_IdCodeCheck`);
+   bootgen's default `0x04ca8093`/0 does not match the production VCK5000 (`0x14ca8093`/1)
+   and the load is rejected. Verify with
+   `tools/pdi_info.py aie_b.pdi --compare-with <full PDI> --cdo-dir <bins> --decode`: it must
+   report `BYTE-IDENTICAL`, `EQUIVALENT` and `IDCODE ... OK`.
 5. **Reflash**: `mkdir host/build && cd host/build && cmake .. && make` then
    `./reflash-aie aie_b.pdi --log`. Exit code 0 and `state=ok plmi_status=0x0` means the
    PLM accepted and executed the image. `--ping` checks the firmware without loading.
