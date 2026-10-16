@@ -8,8 +8,8 @@
 # part, so it is a partial PDI. Order of the CDOs matches Tapasco's plugin.
 set -euo pipefail
 
-src=${1:?source (libadf.a or dir)}
-out=${2:?output pdi}
+src=$(realpath "${1:?source (libadf.a or dir)}")
+out=$(realpath -m "${2:?output pdi}")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -17,13 +17,13 @@ bins=(aie.cdo.reset.bin aie.cdo.clock.gating.bin aie.cdo.error.handling.bin aie.
 
 if [ -f "$src" ]; then
     # libadf.a -> sw.o -> six CDO sections (same objcopy incantation as Tapasco)
-    (cd "$work" && ar x "$(realpath "$src")")
+    (cd "$work" && ar x "$src")
     for b in "${bins[@]}"; do
         objcopy -O binary --set-section-flags ".$b=alloc" -j ".$b" "$work/sw.o" "$work/$b" -I plugin
     done
     dir=$work
 else
-    dir=$(realpath "$src")
+    dir=$src
 fi
 
 for b in "${bins[@]}"; do
