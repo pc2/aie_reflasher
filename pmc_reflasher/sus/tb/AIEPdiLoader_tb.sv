@@ -12,12 +12,14 @@ module AIEPdiLoader_tb;
     logic [11:0] s_araddr; logic s_arvalid; logic s_arready;
     logic [63:0] s_rdata; logic [1:0] s_rresp; logic s_rvalid; logic s_rready;
     logic intr;
-    // small_axil master
-    logic [63:0] m_awaddr; logic [2:0] m_awprot; logic m_awvalid, m_awready;
-    logic [31:0] m_wdata; logic [3:0] m_wstrb; logic m_wvalid, m_wready;
+    // ipi_lpd_interface AXI4-Full master
+    logic [63:0] m_awaddr; logic [7:0] m_awlen; logic [2:0] m_awsize; logic [1:0] m_awburst; logic m_awlock;
+    logic [3:0] m_awcache; logic [2:0] m_awprot; logic [3:0] m_awqos, m_awregion; logic m_awvalid, m_awready;
+    logic [31:0] m_wdata; logic [3:0] m_wstrb; logic m_wlast, m_wvalid, m_wready;
     logic [1:0] m_bresp; logic m_bvalid, m_bready;
-    logic [63:0] m_araddr; logic [2:0] m_arprot; logic m_arvalid, m_arready;
-    logic [31:0] m_rdata; logic [1:0] m_rresp; logic m_rvalid, m_rready;
+    logic [63:0] m_araddr; logic [7:0] m_arlen; logic [2:0] m_arsize; logic [1:0] m_arburst; logic m_arlock;
+    logic [3:0] m_arcache; logic [2:0] m_arprot; logic [3:0] m_arqos, m_arregion; logic m_arvalid, m_arready;
+    logic [31:0] m_rdata; logic [1:0] m_rresp; logic m_rlast, m_rvalid, m_rready;
     // knobs
     logic [31:0] plm_status = 0, plm_loader_status = 0; logic plm_never_ack = 0; logic decerr_all = 0;
 
@@ -29,20 +31,28 @@ module AIEPdiLoader_tb;
         .s_axi_control_araddr(s_araddr), .s_axi_control_arvalid(s_arvalid), .s_axi_control_arready(s_arready),
         .s_axi_control_rdata(s_rdata), .s_axi_control_rresp(s_rresp), .s_axi_control_rvalid(s_rvalid), .s_axi_control_rready(s_rready),
         .intr(intr),
-        .small_axil_awaddr(m_awaddr), .small_axil_awprot(m_awprot), .small_axil_awvalid(m_awvalid), .small_axil_awready(m_awready),
-        .small_axil_wdata(m_wdata), .small_axil_wstrb(m_wstrb), .small_axil_wvalid(m_wvalid), .small_axil_wready(m_wready),
-        .small_axil_bresp(m_bresp), .small_axil_bvalid(m_bvalid), .small_axil_bready(m_bready),
-        .small_axil_araddr(m_araddr), .small_axil_arprot(m_arprot), .small_axil_arvalid(m_arvalid), .small_axil_arready(m_arready),
-        .small_axil_rdata(m_rdata), .small_axil_rresp(m_rresp), .small_axil_rvalid(m_rvalid), .small_axil_rready(m_rready)
+        .ipi_lpd_interface_awaddr(m_awaddr), .ipi_lpd_interface_awlen(m_awlen), .ipi_lpd_interface_awsize(m_awsize),
+        .ipi_lpd_interface_awburst(m_awburst), .ipi_lpd_interface_awlock(m_awlock), .ipi_lpd_interface_awcache(m_awcache),
+        .ipi_lpd_interface_awprot(m_awprot), .ipi_lpd_interface_awqos(m_awqos), .ipi_lpd_interface_awregion(m_awregion),
+        .ipi_lpd_interface_awvalid(m_awvalid), .ipi_lpd_interface_awready(m_awready),
+        .ipi_lpd_interface_wdata(m_wdata), .ipi_lpd_interface_wstrb(m_wstrb), .ipi_lpd_interface_wlast(m_wlast),
+        .ipi_lpd_interface_wvalid(m_wvalid), .ipi_lpd_interface_wready(m_wready),
+        .ipi_lpd_interface_bresp(m_bresp), .ipi_lpd_interface_bvalid(m_bvalid), .ipi_lpd_interface_bready(m_bready),
+        .ipi_lpd_interface_araddr(m_araddr), .ipi_lpd_interface_arlen(m_arlen), .ipi_lpd_interface_arsize(m_arsize),
+        .ipi_lpd_interface_arburst(m_arburst), .ipi_lpd_interface_arlock(m_arlock), .ipi_lpd_interface_arcache(m_arcache),
+        .ipi_lpd_interface_arprot(m_arprot), .ipi_lpd_interface_arqos(m_arqos), .ipi_lpd_interface_arregion(m_arregion),
+        .ipi_lpd_interface_arvalid(m_arvalid), .ipi_lpd_interface_arready(m_arready),
+        .ipi_lpd_interface_rdata(m_rdata), .ipi_lpd_interface_rresp(m_rresp), .ipi_lpd_interface_rlast(m_rlast),
+        .ipi_lpd_interface_rvalid(m_rvalid), .ipi_lpd_interface_rready(m_rready)
     );
 
     fake_plm_axil #(.IPI_CHANNEL(5), .PLM_DELAY(200)) plm(
         .aclk(aclk), .aresetn(aresetn),
-        .awaddr(m_awaddr), .awvalid(m_awvalid), .awready(m_awready),
-        .wdata(m_wdata), .wstrb(m_wstrb), .wvalid(m_wvalid), .wready(m_wready),
+        .awaddr(m_awaddr), .awlen(m_awlen), .awsize(m_awsize), .awburst(m_awburst), .awvalid(m_awvalid), .awready(m_awready),
+        .wdata(m_wdata), .wstrb(m_wstrb), .wlast(m_wlast), .wvalid(m_wvalid), .wready(m_wready),
         .bresp(m_bresp), .bvalid(m_bvalid), .bready(m_bready),
-        .araddr(m_araddr), .arvalid(m_arvalid), .arready(m_arready),
-        .rdata(m_rdata), .rresp(m_rresp), .rvalid(m_rvalid), .rready(m_rready),
+        .araddr(m_araddr), .arlen(m_arlen), .arsize(m_arsize), .arburst(m_arburst), .arvalid(m_arvalid), .arready(m_arready),
+        .rdata(m_rdata), .rresp(m_rresp), .rlast(m_rlast), .rvalid(m_rvalid), .rready(m_rready),
         .plm_status(plm_status), .plm_loader_status(plm_loader_status), .plm_never_ack(plm_never_ack), .decerr_all(decerr_all)
     );
 

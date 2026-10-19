@@ -17,22 +17,30 @@ module fake_plm_axil #(
 )(
     input  logic        aclk,
     input  logic        aresetn,
-    // AXI4-Lite slave
+    // AXI4 slave (single-beat only: awlen/arlen must be 0, checked at runtime)
     input  logic [63:0] awaddr,
+    input  logic [7:0]  awlen,
+    input  logic [2:0]  awsize,
+    input  logic [1:0]  awburst,
     input  logic        awvalid,
     output logic        awready,
     input  logic [31:0] wdata,
     input  logic [3:0]  wstrb,
+    input  logic        wlast,
     input  logic        wvalid,
     output logic        wready,
     output logic [1:0]  bresp,
     output logic        bvalid,
     input  logic        bready,
     input  logic [63:0] araddr,
+    input  logic [7:0]  arlen,
+    input  logic [2:0]  arsize,
+    input  logic [1:0]  arburst,
     input  logic        arvalid,
     output logic        arready,
     output logic [31:0] rdata,
     output logic [1:0]  rresp,
+    output logic        rlast,
     output logic        rvalid,
     input  logic        rready,
     // test knobs
@@ -67,8 +75,14 @@ module fake_plm_axil #(
             aw_got <= 0; w_got <= 0; bvalid <= 0; bresp <= 0;
             obs_pmc <= 0; plm_timer <= -1;
         end else begin
-            if (awvalid && awready) begin aw_got <= 1; aw_q <= awaddr; end
-            if (wvalid  && wready)  begin w_got  <= 1; w_q <= wdata; wstrb_q <= wstrb; end
+            if (awvalid && awready) begin
+                aw_got <= 1; aw_q <= awaddr;
+                if (awlen != 0 || awsize != 2 || awburst != 2'b01) $error("fake_plm: unsupported AW len=%0d size=%0d burst=%0d", awlen, awsize, awburst);
+            end
+            if (wvalid  && wready)  begin
+                w_got  <= 1; w_q <= wdata; wstrb_q <= wstrb;
+                if (!wlast) $error("fake_plm: wlast not set on single-beat write");
+            end
             if (bvalid && bready) bvalid <= 0;
             if (aw_got && w_got && !bvalid) begin
                 aw_got <= 0; w_got <= 0; bvalid <= 1;
@@ -101,12 +115,14 @@ module fake_plm_axil #(
 
     // ---- read channel ----
     assign arready = !rvalid;
+    assign rlast = 1'b1;
     always_ff @(posedge aclk) begin
         if (!aresetn) begin rvalid <= 0; rdata <= 0; rresp <= 0; end
         else begin
             if (rvalid && rready) rvalid <= 0;
             if (arvalid && arready) begin
                 rvalid <= 1;
+                if (arlen != 0 || arsize != 2 || arburst != 2'b01) $error("fake_plm: unsupported AR len=%0d size=%0d burst=%0d", arlen, arsize, arburst);
                 $display("[%0t] READ  addr=%h -> %s", $time, araddr,
                          in_ram(araddr) ? "ram" : (araddr == IPI_BASE+4 ? "OBS" : "DECERR"));
                 if (decerr_all)                begin rdata <= 32'hDEADDEAD; rresp <= 2'b11; end

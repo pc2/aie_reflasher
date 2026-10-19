@@ -1,7 +1,7 @@
 # Package the AIEPdiLoader PE as an IP-XACT core for Tapasco.
 #   vivado -mode batch -source pack_pdi_loader_kernel.tcl -tclargs <part> <codegen.sv>
 # Derived from ../../pack_reflash_kernel.tcl; only the register map and the bus
-# interfaces differ (no bulk port).
+# interfaces differ (single AXI4-Full master ipi_lpd_interface).
 
 set PART [lindex $argv 0]
 set SV   [lindex $argv 1]
@@ -39,8 +39,8 @@ set_property size           {64}              [ipx::get_registers AXI_CONFIG -of
 # PDI_ADDRESS is a PS address, not a Tapasco buffer handle: no ASSOCIATED_BUSIF, so
 # Tapasco does not try to allocate/translate it.
 
-set SMALL_AXIL_BUSIF [ipx::get_bus_interfaces small_axil -of_objects [ipx::current_core]]
-set_property value 32 [ipx::add_bus_parameter DATA_WIDTH $SMALL_AXIL_BUSIF]
+set LPD_BUSIF [ipx::get_bus_interfaces ipi_lpd_interface -of_objects [ipx::current_core]]
+set_property value 32 [ipx::add_bus_parameter DATA_WIDTH $LPD_BUSIF]
 
 set_property core_revision 1 [ipx::current_core]
 ipx::create_xgui_files [ipx::current_core]
