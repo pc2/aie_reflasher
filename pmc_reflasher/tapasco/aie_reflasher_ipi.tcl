@@ -1,64 +1,79 @@
-# CIPS / wiring changes for the PE-initiated IPI reflasher.
+# Tapasco plugin: connect the AIEPdiLoader PE's ipi_lpd_interface straight to the CIPS
+# S_AXI_LPD port (direct PL-to-LPD path, never through the NoC) and enable IPI5.
 #
-# 1. enable_ipi5: enable IPI5 in the CIPS. Gives the PE's masters the segment
-#    psv_ipi_5 (0xFF380000). Already done in your build.
+# Why S_AXI_LPD: Vivado's CIPS model exposes the IPI message RAM (psv_ipi_buffer,
+# 0xFF3F0000, 4 KiB) only on the direct PL-to-PS slave ports, never on the NoC-side
+# NOC_PMC_AXI_0 port. A NoC output toward it would get a 1 GB PL_LO aperture that can
+# never intersect the fixed LPD addresses (BD 41-1743).
 #
-# 2. lpd_port: give the PE a direct PL-to-LPD slave port (S_AXI_LPD) and route
-#    it from the existing join SmartConnect. Reason: Vivado's CIPS model exposes
-#    the IPI message RAM (psv_ipi_buffer, 0xFF3F0000, 4 KiB) only on the direct
-#    PL-to-PS slave ports (S_AXI_LPD / S_AXI_GP2), never on the NoC-side
-#    NOC_PMC_AXI_0 port (checked against AMD's vck190_axi_cci_bd.tcl: 109
-#    segments on S_AXI_LPD incl. psv_ipi_buffer; the NoC ports list psv_ipi_0..6
-#    but no buffer). With S_AXI_LPD the SmartConnect decodes 0xFFxxxxxx to the
-#    LPD port and everything else (DDR, AIE, PMC) to the NoC as before.
+# Address handling: S_AXI_LPD exposes ~100 fixed-address PS/PMC segments. Tapasco's
+# addressmap::construct_address_map (runs between "pre-wiring" and validate) tries to
+# place every segment a PE master can reach, starting at offset 0, which Vivado rejects
+# for fixed-address slaves (BD 41-1075 on psv_pmc_qspi_ospi_flash_0). So:
+#   1. extend platform::get_ignored_segments with every S_AXI_LPD segment, and
+#   2. in the "post-address-map" hook (called inside construct_address_map, before its
+#      segment loop) assign the two segments we need at their fixed addresses and
+#      exclude all the others from the PE's address space.
 #
-# Both procs merge into the existing PS_PMC_CONFIG dictionary. Register them in
-# aie_reconfig.tcl or as their own plugin:
-#
-#   tapasco::register_plugin "platform::aie_reflasher_ipi::enable_ipi5" "pre-wiring"
-#   tapasco::register_plugin "platform::aie_reflasher_ipi::lpd_port"    "pre-wrapper"
-#
-# lpd_port must run after your join_small_and_bulk_ports (post-pe-create) has
-# created /arch/target_ip_01_000/join_bulk_and_small_ic, and before address
-# assignment. Pin and parameter names marked VERIFY come from PG352 / the AMD
-# reference design and were not checked against 2023.1 in this repo.
+# Enable with  { "Feature": "aie_reflasher_ipi", "Properties": {} }.
 
 namespace eval aie_reflasher_ipi {
 
+  variable PE_SPACE /arch/target_ip_01_000/internal_target_ip_01_000/ipi_lpd_interface
+  variable WANTED   {pspmc_0_psv_ipi_5 pspmc_0_psv_ipi_buffer}
+
+  # "pre-platform": the PE's master was auto-connected to the memory subsystem by the
+  # arch; remove that so it can go to the CIPS instead.
   proc delete_ipi_connection_to_mem {args} {
     save_bd_design
-    
-    delete_bd_objs [get_bd_intf_nets arch/out_0_M000_AXI] [get_bd_intf_nets arch/target_ip_01_000_ipi_lpd_interface] [get_bd_cells arch/out_0]
+    delete_bd_objs [get_bd_intf_nets arch/out_0_M000_AXI] \
+                   [get_bd_intf_nets arch/target_ip_01_000_ipi_lpd_interface] \
+                   [get_bd_cells arch/out_0]
     delete_bd_objs [get_bd_intf_pins arch/M_MEM_0]
+    return $args
   }
+
+  # "pre-wiring": CIPS config + direct connection, and install the ignore-list override
+  # (versal_base.tcl is certainly loaded by now; the override is consulted later by
+  # addressmap::construct_address_map).
   proc connect_ipi_lpd_port {args} {
     save_bd_design
-    
     puts "Running connect_ipi_lpd_port: $args"
 
-    set cips [get_bd_cells /host/versal_cips_0]
-    # set ic   [get_bd_cells /arch/target_ip_01_000/join_bulk_and_small_ic]
+    set cips      [get_bd_cells /host/versal_cips_0]
     set reflasher [get_bd_cells /arch/target_ip_01_000/internal_target_ip_01_000]
 
-    # S_AXI_LPD is a direct PL-to-PS port. Do NOT route it through the NoC: a NoC
-    # output toward it gets a 1 GB PL_LO aperture (0x201_8000_0000) that can never
-    # intersect the fixed LPD addresses, and the NoC decodes 0xFFxxxxxx to the PS
-    # NSU in hardware anyway. Vivado then excludes every LPD segment (BD 41-1743).
     set_property -dict [list CONFIG.PS_PMC_CONFIG { \
       PS_GEN_IPI5_ENABLE 1 PS_GEN_IPI5_MASTER A72 \
       PS_USE_S_AXI_LPD 1 PS_S_AXI_LPD_DATA_WIDTH 32 \
     }] $cips
-    puts "aie_reflasher_ipi: IPI5 enabled on CIPS"
-    
-    connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $reflasher/ipi_lpd_interface] \
-                                             [get_bd_intf_pins $cips/S_AXI_LPD]
-    connect_bd_net [get_bd_pins $cips/s_axi_lpd_aclk] [get_bd_pins arch/design_clk]
+    puts "aie_reflasher_ipi: IPI5 + S_AXI_LPD enabled on CIPS"
+
+    connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $reflasher/ipi_lpd_interface] [get_bd_intf_pins $cips/S_AXI_LPD]
 
     save_bd_design
+    set cips      [get_bd_cells /host/versal_cips_0]
+    connect_bd_net [get_bd_pins $cips/s_axi_lpd_aclk] [get_bd_pins clocks_and_resets/design_clk]
+
+    # Also add an ILA
+    create_bd_cell -type ip -vlnv xilinx.com:ip:axis_ila:1.2 ipi_lpd_ila
+    set_property -dict [list \
+      CONFIG.C_DATA_DEPTH {32768} \
+      CONFIG.C_MON_TYPE {Interface_Monitor} \
+    ] [get_bd_cells ipi_lpd_ila]
+    connect_bd_intf_net [get_bd_intf_pins ipi_lpd_ila/SLOT_0_AXI] -boundary_type upper [get_bd_intf_pins arch/ipi_lpd_interface]
+    connect_bd_net [get_bd_pins ipi_lpd_ila/clk] [get_bd_pins clocks_and_resets/design_clk]
+    connect_bd_net [get_bd_pins ipi_lpd_ila/resetn] [get_bd_pins clocks_and_resets/design_peripheral_aresetn]
+    assign_bd_address
+  }
+
+  proc write_ltx {} {
+    write_debug_probes debug_probes.ltx
   }
 }
 
 if {[tapasco::is_feature_enabled "aie_reflasher_ipi"]} {
-  tapasco::register_plugin "platform::aie_reflasher_ipi::connect_ipi_lpd_port" "pre-wiring"
   tapasco::register_plugin "platform::aie_reflasher_ipi::delete_ipi_connection_to_mem" "pre-platform"
+  tapasco::register_plugin "platform::aie_reflasher_ipi::connect_ipi_lpd_port"         "post-platform"
+  tapasco::register_plugin "platform::aie_reflasher_ipi::write_ltx"           "post-bitstream"
 }
