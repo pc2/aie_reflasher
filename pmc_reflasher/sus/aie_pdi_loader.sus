@@ -281,35 +281,37 @@ module AIEPdiLoader {
 
     bool[64] ctrl_bits = ctrl.input_regs[1]
 
-    domain axi4_small_interface
-    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) small_axil_awaddr'0= loader.awaddr
-    output bool[3]                                small_axil_awprot'0= ctrl_bits[0:3]
-    output bool                                   small_axil_awvalid'0 = loader.awvalid
-    input  bool                                   small_axil_awready
-    output bool[AXI_WIDTH]                        small_axil_wdata'0   = loader.wdata
-    output bool[AXI_WIDTH / 8]                    small_axil_wstrb'0   = loader.wstrb
-    output bool                                   small_axil_wvalid'0  = loader.wvalid
-    input  bool                                   small_axil_wready
-    input  bool[2]                                small_axil_bresp
-    input  bool                                   small_axil_bvalid
-    output bool                                   small_axil_bready'0  = loader.bready
-    loader.awready = small_axil_awready
-    loader.wready  = small_axil_wready
-    loader.bresp   = small_axil_bresp
-    loader.bvalid  = small_axil_bvalid
+    domain ipi_lpd_interface
+    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) ipi_lpd_interface_awaddr'0= loader.awaddr
+    output bool[3]                                ipi_lpd_interface_awprot'0= ctrl_bits[0:3]
+    output bool                                   ipi_lpd_interface_awvalid'0 = loader.awvalid
+    input  bool                                   ipi_lpd_interface_awready'0
+    output  int#(FROM: 0, TO: 8)                  ipi_lpd_interface_awsize'0 = 2
+    output  int#(FROM: 0, TO: 8)                  ipi_lpd_interface_awsize'0 = 2
+    output bool[AXI_WIDTH]                        ipi_lpd_interface_wdata'0   = loader.wdata
+    output bool[AXI_WIDTH / 8]                    ipi_lpd_interface_wstrb'0   = loader.wstrb
+    output bool                                   ipi_lpd_interface_wvalid'0  = loader.wvalid
+    input  bool                                   ipi_lpd_interface_wready'0
+    input  bool[2]                                ipi_lpd_interface_bresp'0
+    input  bool                                   ipi_lpd_interface_bvalid'0
+    output bool                                   ipi_lpd_interface_bready'0  = loader.bready
+    loader.awready = ipi_lpd_interface_awready
+    loader.wready  = ipi_lpd_interface_wready
+    loader.bresp   = ipi_lpd_interface_bresp
+    loader.bvalid  = ipi_lpd_interface_bvalid
 
-    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) small_axil_araddr'0= loader.araddr
-    output bool[3]                                small_axil_arprot'0= ctrl_bits[4:7]
-    output bool                                   small_axil_arvalid'0 = loader.arvalid
-    input  bool                                   small_axil_arready
-    input  bool[AXI_WIDTH]                        small_axil_rdata
-    input  bool[2]                                small_axil_rresp
-    input  bool                                   small_axil_rvalid
-    output bool                                   small_axil_rready'0  = loader.rready
-    loader.arready = small_axil_arready
-    loader.rdata   = small_axil_rdata
-    loader.rresp   = small_axil_rresp
-    loader.rvalid  = small_axil_rvalid
+    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) ipi_lpd_interface_araddr'0= loader.araddr
+    output bool[3]                                ipi_lpd_interface_arprot'0= ctrl_bits[4:7]
+    output bool                                   ipi_lpd_interface_arvalid'0 = loader.arvalid
+    input  bool                                   ipi_lpd_interface_arready'0
+    input  bool[AXI_WIDTH]                        ipi_lpd_interface_rdata'0
+    input  bool[2]                                ipi_lpd_interface_rresp'0
+    input  bool                                   ipi_lpd_interface_rvalid'0
+    output bool                                   ipi_lpd_interface_rready'0  = loader.rready
+    loader.arready = ipi_lpd_interface_arready
+    loader.rdata   = ipi_lpd_interface_rdata
+    loader.rresp   = ipi_lpd_interface_rresp
+    loader.rvalid  = ipi_lpd_interface_rvalid
 
     when ctrl.start {
         loader.start(ctrl.input_regs[0])

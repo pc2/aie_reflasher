@@ -25,19 +25,16 @@
 
 namespace eval aie_reflasher_ipi {
 
-  proc enable_ipi5 {{args {}}} {
+  proc connect_ipi_lpd_port {} {
     set cips [get_bd_cells /host/versal_cips_0]
+    # set ic   [get_bd_cells /arch/target_ip_01_000/join_bulk_and_small_ic]
+    set reflasher [get_bd_cells /arch/target_ip_01_000/internal_target_ip_01_000]
+
     set_property -dict [list CONFIG.PS_PMC_CONFIG { \
       PS_GEN_IPI5_ENABLE 1 PS_GEN_IPI5_MASTER A72 \
     }] $cips
     puts "aie_reflasher_ipi: IPI5 enabled on CIPS"
-    return $args
-  }
-
-  proc lpd_port {{args {}}} {
-    set cips [get_bd_cells /host/versal_cips_0]
-    set ic   [get_bd_cells /arch/target_ip_01_000/join_bulk_and_small_ic]
-
+    
     # S_AXI_LPD is a direct PL-to-PS port. Do NOT route it through the NoC: a NoC
     # output toward it gets a 1 GB PL_LO aperture (0x201_8000_0000) that can never
     # intersect the fixed LPD addresses, and the NoC decodes 0xFFxxxxxx to the PS
@@ -46,6 +43,14 @@ namespace eval aie_reflasher_ipi {
       PS_USE_S_AXI_LPD 1 PS_S_AXI_LPD_DATA_WIDTH 32 \
     }] $cips
 
+    return {}
+    
+    
+    connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $reflasher/small_axil] \
+                                             [get_bd_intf_pins $cips/S_AXI_LPD]
+    connect_bd_net -boundary_type upper [get_bd_nets -of_objects [get_bd_pins $reflasher/aclk]] \
+                                        [get_bd_pins $cips/s_axi_lpd_aclk]
+    
     # Second master port on the join IC; Vivado decodes the LPD segments
     # (0xFF000000..0xFFFFFFFF) to it and everything else to M00 (NoC).
     set_property CONFIG.NUM_MI 2 $ic
@@ -67,6 +72,9 @@ namespace eval aie_reflasher_ipi {
       }
     }
     puts "aie_reflasher_ipi: S_AXI_LPD driven from join_bulk_and_small_ic/M01_AXI"
-    return $args
   }
+}
+
+if {[tapasco::is_feature_enabled "aie_reflasher_ipi"]} {
+  tapasco::register_plugin "platform::aie_reflasher_ipi::connect_ipi_lpd_port" "pre-wiring"
 }

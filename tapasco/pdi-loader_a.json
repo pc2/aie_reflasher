@@ -32,7 +32,7 @@
       }
   },
   {
-    "Feature": "AIE-Reflasher-IPI",
+    "Feature": "aie_reflasher_ipi",
     "Properties": {}
   } ]
 } ]
