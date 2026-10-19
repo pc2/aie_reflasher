@@ -25,56 +25,40 @@
 
 namespace eval aie_reflasher_ipi {
 
-  proc connect_ipi_lpd_port {} {
+  proc delete_ipi_connection_to_mem {args} {
+    save_bd_design
+    
+    delete_bd_objs [get_bd_intf_nets arch/out_0_M000_AXI] [get_bd_intf_nets arch/target_ip_01_000_ipi_lpd_interface] [get_bd_cells arch/out_0]
+    delete_bd_objs [get_bd_intf_pins arch/M_MEM_0]
+  }
+  proc connect_ipi_lpd_port {args} {
+    save_bd_design
+    
+    puts "Running connect_ipi_lpd_port: $args"
+
     set cips [get_bd_cells /host/versal_cips_0]
     # set ic   [get_bd_cells /arch/target_ip_01_000/join_bulk_and_small_ic]
     set reflasher [get_bd_cells /arch/target_ip_01_000/internal_target_ip_01_000]
 
-    set_property -dict [list CONFIG.PS_PMC_CONFIG { \
-      PS_GEN_IPI5_ENABLE 1 PS_GEN_IPI5_MASTER A72 \
-    }] $cips
-    puts "aie_reflasher_ipi: IPI5 enabled on CIPS"
-    
     # S_AXI_LPD is a direct PL-to-PS port. Do NOT route it through the NoC: a NoC
     # output toward it gets a 1 GB PL_LO aperture (0x201_8000_0000) that can never
     # intersect the fixed LPD addresses, and the NoC decodes 0xFFxxxxxx to the PS
     # NSU in hardware anyway. Vivado then excludes every LPD segment (BD 41-1743).
     set_property -dict [list CONFIG.PS_PMC_CONFIG { \
+      PS_GEN_IPI5_ENABLE 1 PS_GEN_IPI5_MASTER A72 \
       PS_USE_S_AXI_LPD 1 PS_S_AXI_LPD_DATA_WIDTH 32 \
     }] $cips
-
-    return {}
+    puts "aie_reflasher_ipi: IPI5 enabled on CIPS"
     
-    
-    connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $reflasher/small_axil] \
+    connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $reflasher/ipi_lpd_interface] \
                                              [get_bd_intf_pins $cips/S_AXI_LPD]
-    connect_bd_net -boundary_type upper [get_bd_nets -of_objects [get_bd_pins $reflasher/aclk]] \
-                                        [get_bd_pins $cips/s_axi_lpd_aclk]
-    
-    # Second master port on the join IC; Vivado decodes the LPD segments
-    # (0xFF000000..0xFFFFFFFF) to it and everything else to M00 (NoC).
-    set_property CONFIG.NUM_MI 2 $ic
-    connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $ic/M01_AXI] \
-                                             [get_bd_intf_pins $cips/S_AXI_LPD]
-    connect_bd_net -boundary_type upper [get_bd_nets -of_objects [get_bd_pins $ic/aclk]] \
-                                        [get_bd_pins $cips/s_axi_lpd_aclk]
-    assign_bd_address -quiet
+    connect_bd_net [get_bd_pins $cips/s_axi_lpd_aclk] [get_bd_pins arch/design_clk]
 
-    # Keep all IPI traffic on ONE path: the PE posts writes without waiting for
-    # responses, so a TRIG write via the NoC could overtake buffer writes via the
-    # LPD port. Exclude the NoC (NOC_PMC_AXI_0) copies of every LPD-range segment.
-    foreach sp [list /arch/target_ip_01_000/internal_target_ip_01_000/small_axil \
-                     /arch/target_ip_01_000/internal_target_ip_01_000/bulk_axi] {
-      foreach seg [get_bd_addr_segs -quiet -of_objects [get_bd_addr_spaces $sp] \
-                     -filter {NAME =~ "*NOC_PMC_AXI_0*"}] {
-        set off [get_property OFFSET $seg]
-        if {$off >= 0xFF000000 && $off < 0x100000000} { exclude_bd_addr_seg $seg }
-      }
-    }
-    puts "aie_reflasher_ipi: S_AXI_LPD driven from join_bulk_and_small_ic/M01_AXI"
+    save_bd_design
   }
 }
 
 if {[tapasco::is_feature_enabled "aie_reflasher_ipi"]} {
   tapasco::register_plugin "platform::aie_reflasher_ipi::connect_ipi_lpd_port" "pre-wiring"
+  tapasco::register_plugin "platform::aie_reflasher_ipi::delete_ipi_connection_to_mem" "pre-platform"
 }

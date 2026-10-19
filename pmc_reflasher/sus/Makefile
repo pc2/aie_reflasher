@@ -35,3 +35,6 @@ sim-verilator: $(BUILD)/aie_pdi_loader.sv
 clean:
 	rm -rf obj_dir
 	rm -rf $(BUILD)
+
+tapasco_import: $(BUILD)/AIEPdiLoader.zip
+	tapasco import $(BUILD)/AIEPdiLoader.zip as 10203 -p vck5000
