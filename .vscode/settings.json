@@ -6,6 +6,7 @@
         "sus-xrt/axi_lite.sus",
         "sus-xrt/axi_memory.sus",
         "sus-tapasco/sus/tapasco_ctrl_slave.sus",
-        "sus/aie_pdi_loader.sus"
+        "sus/aie_pdi_loader.sus",
+        "sus/data_streamer_vn.sus"
     ]
 }

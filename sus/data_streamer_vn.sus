@@ -1,0 +1,198 @@
+// DataStreamerVN: SUS replacement for the Bluespec DataStreamerVN of
+// tapasco-examples/Vector-Norm (esa-tu-darmstadt). Same ports, same register map, same
+// data layout, so it drops into the same Tapasco job (DMA-Streaming + AI-Engine features)
+// and the Vector-Norm AIE graph (aie/src) is unchanged.
+//
+// Data path
+//   S_AXIS_DMA (512 bit)  : 16 floats per beat, interleaved (x0 y0 x1 y1 ... x7 y7)
+//   M_AXIS_AIE_X/Y (128)  : every 256-bit half of a DMA beat becomes one X beat
+//                           (x0..x3) and one Y beat (y0..y3), sent together
+//   S_AXIS_AIE (128)      : z0..z3 from the graph; four beats are packed into one
+//   M_AXIS_DMA (512)      : 16 results per beat, tlast on the final beat
+//
+// Registers (tapasco_ctrl_slave): 0x00 CTRL, 0x10 return value = cycles from start to
+// the last result beat, 0x20 SAMPLES = number of (x, y) pairs, a multiple of 16.
+// The number of result beats is SAMPLES / 16; the PE finishes (interrupt) when all of
+// them have been sent to the DMA.
+
+module DataStreamerVN {
+    clock aclk
+    input bool aresetn'0
+
+    gen int CTRL_AXI_WIDTH = 64
+    gen int CTRL_ADDR_WIDTH = 12
+    gen int DMA_WIDTH = 512
+    gen int AIE_WIDTH = 128
+    gen int FLOATS_PER_AIE_BEAT = 4            // 128 / 32
+    gen int AIE_BEATS_PER_DMA_BEAT = 4         // 512 / 128
+    gen int FIFO_DEPTH = 16
+    gen int COUNTER_END = 1 << 32
+
+    // ---------------------------------------------------------------- Tapasco control
+    tapasco_ctrl_slave#(NUM_INPUT_REGS: 1, ADDR_WIDTH: CTRL_ADDR_WIDTH, AXI_WIDTH: CTRL_AXI_WIDTH) ctrl
+
+    input  int#(FROM: 0, TO: 1 << CTRL_ADDR_WIDTH) s_axi_control_awaddr'0
+    input  bool                     s_axi_control_awvalid'0
+    output bool                     s_axi_control_awready'0 = ctrl.awready
+    input  bool[CTRL_AXI_WIDTH]     s_axi_control_wdata'0
+    input  bool[CTRL_AXI_WIDTH / 8] s_axi_control_wstrb'0
+    input  bool                     s_axi_control_wvalid'0
+    output bool                     s_axi_control_wready'0  = ctrl.wready
+    output bool[2]                  s_axi_control_bresp'0   = ctrl.bresp
+    output bool                     s_axi_control_bvalid'0  = ctrl.bvalid
+    input  bool                     s_axi_control_bready'0
+    input  int#(FROM: 0, TO: 1 << CTRL_ADDR_WIDTH) s_axi_control_araddr'0
+    input  bool                     s_axi_control_arvalid'0
+    output bool                     s_axi_control_arready'0 = ctrl.arready
+    output bool[CTRL_AXI_WIDTH]     s_axi_control_rdata'0   = ctrl.rdata
+    output bool[2]                  s_axi_control_rresp'0   = ctrl.rresp
+    output bool                     s_axi_control_rvalid'0  = ctrl.rvalid
+    input  bool                     s_axi_control_rready'0
+    ctrl.awaddr  = s_axi_control_awaddr
+    ctrl.awvalid = s_axi_control_awvalid
+    ctrl.wdata   = s_axi_control_wdata
+    ctrl.wstrb   = s_axi_control_wstrb
+    ctrl.wvalid  = s_axi_control_wvalid
+    ctrl.bready  = s_axi_control_bready
+    ctrl.araddr  = s_axi_control_araddr
+    ctrl.arvalid = s_axi_control_arvalid
+    ctrl.rready  = s_axi_control_rready
+    output bool intr'0 = ctrl.intr
+
+    // ---------------------------------------------------------------- host -> AIE
+    // S_AXIS_DMA -> FIFO -> split each 256-bit half into one X and one Y beat
+    FWFT#(T: type bool[DMA_WIDTH], DEPTH: FIFO_DEPTH, MAY_PUSH_LATENCY: 0) dma_in_fifo
+
+    output bool                 S_AXIS_DMA_tready'0 = dma_in_fifo.may_push
+    input  bool                 S_AXIS_DMA_tvalid'0
+    input  bool[DMA_WIDTH]      S_AXIS_DMA_tdata'0
+    input  bool[DMA_WIDTH / 8]  S_AXIS_DMA_tkeep'0   // ignored: the host always sends full beats
+    input  bool                 S_AXIS_DMA_tlast'0   // ignored: SAMPLES decides when we are done
+    bool[DMA_WIDTH / 8] _s_dma_keep = S_AXIS_DMA_tkeep
+    bool                _s_dma_last = S_AXIS_DMA_tlast
+
+    when S_AXIS_DMA_tvalid & dma_in_fifo.may_push {
+        dma_in_fifo.push(S_AXIS_DMA_tdata)
+    }
+
+    state bool            x_valid
+    state bool            y_valid
+    state bool[AIE_WIDTH] x_data
+    state bool[AIE_WIDTH] y_data
+    state bool            upper_half   // which half of the FIFO head goes out next
+
+    input  bool                 M_AXIS_AIE_X_tready'0
+    output bool                 M_AXIS_AIE_X_tvalid'0 = x_valid
+    output bool[AIE_WIDTH]      M_AXIS_AIE_X_tdata'0  = x_data
+    output bool                 M_AXIS_AIE_X_tlast'0  = false
+    input  bool                 M_AXIS_AIE_Y_tready'0
+    output bool                 M_AXIS_AIE_Y_tvalid'0 = y_valid
+    output bool[AIE_WIDTH]      M_AXIS_AIE_Y_tdata'0  = y_data
+    output bool                 M_AXIS_AIE_Y_tlast'0  = false
+
+    bool x_free = !x_valid | M_AXIS_AIE_X_tready
+    bool y_free = !y_valid | M_AXIS_AIE_Y_tready
+    when x_valid & M_AXIS_AIE_X_tready { x_valid = false }
+    when y_valid & M_AXIS_AIE_Y_tready { y_valid = false }
+
+    when dma_in_fifo.pop_available : bool[DMA_WIDTH] beat {
+        when x_free & y_free {
+            bool[DMA_WIDTH / 2] half
+            when upper_half {
+                half = beat[DMA_WIDTH / 2 : DMA_WIDTH]
+                dma_in_fifo.pop()
+            } else {
+                half = beat[0 : DMA_WIDTH / 2]
+            }
+            for int i in 0..FLOATS_PER_AIE_BEAT {
+                x_data[i * 32 +: 32] = half[(2 * i) * 32 +: 32]
+                y_data[i * 32 +: 32] = half[(2 * i + 1) * 32 +: 32]
+            }
+            x_valid = true
+            y_valid = true
+            upper_half = !upper_half
+        }
+    }
+
+    // ---------------------------------------------------------------- AIE -> host
+    // S_AXIS_AIE -> pack four beats -> FIFO -> M_AXIS_DMA while results are outstanding
+    FWFT#(T: type bool[DMA_WIDTH], DEPTH: FIFO_DEPTH, MAY_PUSH_LATENCY: 0) dma_out_fifo
+
+    output bool                 S_AXIS_AIE_tready'0 = dma_out_fifo.may_push
+    input  bool                 S_AXIS_AIE_tvalid'0
+    input  bool[AIE_WIDTH]      S_AXIS_AIE_tdata'0
+    input  bool                 S_AXIS_AIE_tlast'0   // ignored
+    bool _s_aie_last = S_AXIS_AIE_tlast
+
+    state bool[AIE_WIDTH][AIE_BEATS_PER_DMA_BEAT] acc
+    state int#(FROM: 0, TO: AIE_BEATS_PER_DMA_BEAT) acc_idx
+
+    when S_AXIS_AIE_tvalid & dma_out_fifo.may_push {
+        acc[acc_idx] = S_AXIS_AIE_tdata
+        when acc_idx == AIE_BEATS_PER_DMA_BEAT - 1 {
+            bool[DMA_WIDTH] packed
+            for int i in 0..AIE_BEATS_PER_DMA_BEAT - 1 {
+                packed[i * AIE_WIDTH +: AIE_WIDTH] = acc[i]
+            }
+            packed[(AIE_BEATS_PER_DMA_BEAT - 1) * AIE_WIDTH +: AIE_WIDTH] = S_AXIS_AIE_tdata
+            dma_out_fifo.push(packed)
+            acc_idx = 0
+        } else {
+            acc_idx = IntNarrow#(FROM: 0, TO: AIE_BEATS_PER_DMA_BEAT)(acc_idx + 1)
+        }
+    }
+
+    state bool            out_valid
+    state bool[DMA_WIDTH] out_data
+    state bool            out_last
+
+    input  bool                 M_AXIS_DMA_tready'0
+    output bool                 M_AXIS_DMA_tvalid'0 = out_valid
+    output bool[DMA_WIDTH]      M_AXIS_DMA_tdata'0  = out_data
+    output bool[DMA_WIDTH / 8]  M_AXIS_DMA_tkeep'0  = Repeat(true)
+    output bool                 M_AXIS_DMA_tlast'0  = out_last
+
+    // ---------------------------------------------------------------- run control
+    state bool running
+    state int#(FROM: 0, TO: COUNTER_END) outstanding   // result beats still to send
+    state int#(FROM: 0, TO: COUNTER_END) cycles
+
+    when out_valid & M_AXIS_DMA_tready { out_valid = false }
+
+    when dma_out_fifo.pop_available : bool[DMA_WIDTH] result {
+        when running & outstanding != 0 & (!out_valid | M_AXIS_DMA_tready) {
+            dma_out_fifo.pop()
+            out_data = result
+            out_last = outstanding == 1
+            out_valid = true
+            outstanding = IntNarrow#(FROM: 0, TO: COUNTER_END)(outstanding - 1)
+        }
+    }
+
+    when ctrl.start {
+        bool[CTRL_AXI_WIDTH] samples = ctrl.input_regs[0]
+        running = true
+        cycles = 0
+        outstanding = BitsToUInt(samples[4:36])   // samples / 16, truncated to 32 bits like the original
+    }
+    when running {
+        cycles = (cycles + 1) mod COUNTER_END
+        when outstanding == 0 & !out_valid {
+            running = false
+            ctrl.finish(UIntToBits(cycles))
+        }
+    }
+
+    when !aresetn {
+        running = false
+        outstanding = 0
+        x_valid = false
+        y_valid = false
+        out_valid = false
+        upper_half = false
+        acc_idx = 0
+        dma_in_fifo.rst()
+        dma_out_fifo.rst()
+        ctrl.rst()
+    }
+}

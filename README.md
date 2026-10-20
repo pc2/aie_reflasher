@@ -26,10 +26,13 @@ reflash-aie-loader --DMA-->  aie_partial.pdi
                    <--return value (PLMI status, cycles)--  PE
 ```
 
-This repository contains everything needed to reproduce the setup: the PE, its simulation
-testbench, the Tapasco platform plugin, the host tools, the partial-PDI builder and two
-compiled AIE graphs (`aie/libadf_a.a`, `aie/libadf_b.a`) that differ only in a `* 2.0` on the
-output, so a successful reflash is visible from the host.
+This repository contains everything needed to reproduce the setup: the reflasher PE, the
+`DataStreamerVN` example PE that feeds the AI Engine (a SUS port of the Bluespec PE from
+esa-tu-darmstadt/tapasco-examples, so no Bluespec compiler is needed), simulation testbenches
+for both, the Tapasco platform plugin, the host tools, the partial-PDI builder and the
+Vector-Norm AIE graph. The graph is compiled twice (`aie/libadf_a.a`, `aie/libadf_b.a`); the
+variants differ only in a `* 2.0` on the output, so a successful reflash is visible from the
+host.
 
 ## Repository layout
 
@@ -37,25 +40,27 @@ output, so a successful reflash is visible from the host.
 |---|---|
 | `Makefile` | every build step (see below); no CMake |
 | `sus/aie_pdi_loader.sus` | the `AIEPdiLoader` PE and its reusable core `pmc_pdi_loader` |
-| `sus/tb/` | SystemVerilog testbench with a behavioural model of the IPI block and the PLM (Verilator or xsim) |
+| `sus/data_streamer_vn.sus` | the `DataStreamerVN` PE: DMA stream in, x/y streams to the AIE, z stream back, DMA stream out |
+| `sus/tb/` | SystemVerilog testbenches (Verilator or xsim): fake IPI block + PLM for the loader, behavioural AIE for the streamer |
 | `tapasco/aie_reflasher_ipi.tcl` | Tapasco vck5000 plugin: enables IPI0..6 and `S_AXI_LPD` on the CIPS and wires the PE to it |
-| `tapasco/pack_pdi_loader_kernel.tcl` | Vivado IP packaging of the PE (register map) |
+| `tapasco/pack_pdi_loader_kernel.tcl`, `tapasco/pack_data_streamer_vn.tcl` | Vivado IP packaging of the two PEs (register maps) |
 | `tapasco/pdi-loader.json` | Tapasco job file (`@ADF@` is filled in by `make jobfile`) (`DataStreamerVN` + `AIEPdiLoader` + AI-Engine + DMA-Streaming) |
 | `host/reflash_aie_loader.cpp` | host tool that performs a reflash |
 | `host/vector_norm.cpp` | host tool that runs the vector-norm example to check which AIE graph is live |
 | `bin/` | prebuilt copies of the two host tools (`make host` rebuilds them in place) |
 | `tools/make_aie_pdi.sh` | `libadf.a` to AIE-only partial PDI (bootgen) |
 | `tools/pdi_info.py` | dumps and sanity-checks a PDI; `tools/cdo_parser.py`, `tools/cdo_decode.py` decode CDO streams |
-| `aie/` | the two AIE graphs as `libadf_*.a` and the partial PDIs built from them |
+| `aie/src/` | the Vector-Norm AIE graph (from tapasco-examples, PLIOs pinned to fixed shim tiles); `-DDOUBLE_OUTPUT` gives graph B |
+| `aie/` | the two compiled graphs `libadf_{a,b}.a` and the partial PDIs built from them |
 | `docs/` | design notes, background on the PMC/IPI path, CDO format reference |
 | `img/` | block-design and address-map screenshots from the development, referenced from `docs/background.md` |
 | `sus-xrt/`, `sus-tapasco/` | submodules with the SUS AXI and Tapasco control-slave libraries |
-| `tapasco-examples/` | submodule; provides the `DataStreamerVN` PE and the Vector-Norm AIE graph source |
 | `vck5000_modules.sh` | pc2-specific environment (modules, licenses, Tapasco workspace) |
 
 ## Prerequisites
 
-- Vivado/Vitis 2023.1 (`vivado`, `bootgen`, `aiecompiler`) and the VCK5000 Vitis platform.
+- Vivado/Vitis 2023.1 (`vivado`, `bootgen`, `aiecompiler`). `aiecompiler` is only needed to
+  rebuild the AIE graphs; it reads `XILINX_VITIS` and `PLATFORM_FILE` (the VCK5000 `.xpfm`).
 - A Tapasco checkout and workspace for the `vck5000` platform with the runtime built
   (`tapasco-build-libs`) and `tapasco-setup.sh` sourced. The Makefile reads
   `TAPASCO_WORK_DIR` and `TAPASCO_HOME_TOOLFLOW` from it.
@@ -67,20 +72,21 @@ On pc2: `source vck5000_modules.sh`.
 
 ## Reproducing the setup
 
-### 1. Build and simulate the PE
+### 1. Build and simulate the PEs
 
 ```
-make codegen      # sus_compiler -> build/aie_pdi_loader.sv
-make sim          # Verilator: 8 scenarios against the fake PLM, all must print OK
+make codegen      # sus_compiler -> build/aie_pdi_loader.sv, build/data_streamer_vn.sv
+make sim          # Verilator: 8 loader scenarios against the fake PLM, 5 streamer scenarios
+                  # against a behavioural AIE (random stalls, scale 1 and 2); all must print OK
 ```
 
-`make sim-xsim` runs the same testbench in Vivado's simulator.
+`make sim-xsim` runs the loader testbench in Vivado's simulator.
 
-### 2. Package the PE and import it into Tapasco
+### 2. Package the PEs and import them into Tapasco
 
 ```
-make package      # Vivado ipx -> build/AIEPdiLoader.zip
-make import       # tapasco import build/AIEPdiLoader.zip as 10203 -p vck5000
+make package      # Vivado ipx -> build/AIEPdiLoader.zip, build/DataStreamerVN.zip
+make import       # tapasco import ... as 10203 (AIEPdiLoader) and 10204 (DataStreamerVN)
 ```
 
 ### 3. Install the platform plugin
@@ -102,11 +108,19 @@ The plugin is activated by the `aie_reflasher_ipi` feature in the job file. It
 Set `"ila": "true"` in the feature properties to add an AXI ILA on the LPD port; the probe
 file is written next to the bitstream.
 
-### 4. Build the bitstream
+### 4. AIE graphs (optional, the archives are checked in)
 
-The design also needs the `DataStreamerVN` PE from `tapasco-examples/Vector-Norm` (imported
-as ID 8847) and an AIE graph archive. See the TODO below for building those; the archives
-used here are checked in as `aie/libadf_a.a` and `aie/libadf_b.a`.
+```
+make aie          # aiecompiler: aie/src -> aie/libadf_a.a, and with -DDOUBLE_OUTPUT -> aie/libadf_b.a
+```
+
+Both archives come from the same tree; `sum_sqrt.cpp` multiplies the norm by 2.0 under
+`#ifdef DOUBLE_OUTPUT`, which `make aie-b` defines (`make aie-a` builds the plain one).
+`graph.h` pins the three PLIOs to shim tiles 12, 13 and 14. That pinning is what makes the graphs
+interchangeable at runtime: the PL side of the design is built once against those tiles,
+and any graph that keeps them can be loaded by the reflasher.
+
+### 5. Build the bitstream
 
 ```
 make jobfile ADF=$PWD/aie/libadf_a.a   # build/pdi-loader.json
@@ -116,7 +130,7 @@ make bitstream                         # tapasco --jobsFile build/pdi-loader.jso
 The PDI ends up under `$TAPASCO_WORK_DIR/compose/axi4mm/vck5000/` as
 `axi4mm-vck5000--DataStreamerVN_1_AIEPdiLoader_1--313.pdi`. Load it with `tapasco-load-bitstream`.
 
-### 5. Build the partial PDIs
+### 6. Build the partial PDIs
 
 ```
 make pdi          # aie/libadf_a.pdi, aie/libadf_b.pdi (bootgen)
@@ -129,13 +143,13 @@ to the boot PDI. The IDCODE must match the silicon or the PLM refuses the image;
 is the production VCK5000 (`0x14ca8093` / `1`). To copy it from a PDI that already boots on
 your card instead: `make pdi REF_PDI=/path/to/full.pdi`.
 
-### 6. Build the host tools
+### 7. Build the host tools
 
 ```
 make host         # bin/reflash-aie-loader, bin/vector-norm
 ```
 
-### 7. Reflash
+### 8. Reflash
 
 ```
 bin/vector-norm                      # design A: SUCCESS
@@ -180,29 +194,28 @@ status. Details, the step table and the bring-up log are in
 [docs/aie_pdi_loader_design.md](docs/aie_pdi_loader_design.md); why the PMC has to do this and
 why the earlier PL-only attempt could not are in [docs/background.md](docs/background.md).
 
+## The DataStreamerVN PE
+
+`sus/data_streamer_vn.sus` is a port of the Bluespec `DataStreamerVN` from
+esa-tu-darmstadt/tapasco-examples (Vector-Norm), with the same ports, register map and data
+layout, so Tapasco's DMA-Streaming and AI-Engine features connect it exactly like the
+original and `vector-norm` accepts either (it tries the SUS VLNV first, then the Bluespec one).
+
+- `S_AXIS_DMA` (512 bit): 8 interleaved (x, y) float pairs per beat. Each 256-bit half becomes
+  one beat on `M_AXIS_AIE_X` (x0..x3) and one on `M_AXIS_AIE_Y` (y0..y3), sent together.
+- `S_AXIS_AIE` (128 bit): z0..z3 from the graph; four beats are packed into one 512-bit beat
+  on `M_AXIS_DMA`, with `tlast` on the final one.
+- Registers: `SAMPLES` at 0x20 (number of pairs, a multiple of 16); the return value at 0x10
+  is the cycle count from start to the last result beat. The PE raises its interrupt when
+  `SAMPLES / 16` result beats have been sent.
+
+The checked-in `libadf` archives were compiled from `aie/src` with the Bluespec PE still in
+the design; the SUS PE is verified in simulation (`make sim`) against a behavioural AIE but
+has not yet been run on hardware.
+
 ## TODO
 
-- **Vector-Norm sources.** The `DataStreamerVN` PE and the AIE graph come from the
-  `tapasco-examples` submodule (`Vector-Norm/build_bitstream.sh` builds the Bluespec PE and
-  imports it as 8847). The two `libadf` archives in `aie/` were compiled from
-  `tapasco-examples/Vector-Norm/aie` with pinned PLIO locations (insert after line 22 of
-  `src/graph.h`):
-
-  ```cpp
-  location<PLIO>(in_x)  = shim(6 + 6, 2 * 0);
-  location<PLIO>(in_y)  = shim(6 + 7, 2 * 0);
-  location<PLIO>(out_z) = shim(6 + 8, 2 * 0);
-  ```
-
-  and, for variant B, a multiply by 2.0 in `src/sum_sqrt.cpp` line 14:
-
-  ```cpp
-  *outIt++ = aie::mul(aie::sqrt(aie::add(inX_i, inY_i)), aie::broadcast<float, VECTOR_SIZE>(2.0f));
-  ```
-
-  Those modifications are not yet captured as files or patches in this repository, and the
-  Makefile has no targets for the Bluespec PE or `aiecompiler`. Pinning the PLIOs is what
-  makes the two graphs interchangeable at runtime: the PL side of the design is built once
-  for fixed shim tiles.
-- The timeout of the PE (`TIMEOUT_CYCLES = 2^28`, about 1 s at 312.5 MHz) was chosen for
-  100 KB PDIs; multi-MB AIE images may need a larger value.
+- Run the SUS `DataStreamerVN` on the card (rebuild the bitstream with both PEs, then the
+  reflash sequence above) and confirm the Vector-Norm results.
+- The timeout of the loader PE (`TIMEOUT_CYCLES = 2^28`, about 1 s at 312.5 MHz) was chosen
+  for 100 KB PDIs; multi-MB AIE images may need a larger value.
