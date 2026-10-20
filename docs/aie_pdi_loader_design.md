@@ -62,7 +62,7 @@ All from the repository root (see the README):
 ```
 make codegen    # sus_compiler -> build/aie_pdi_loader.sv (+ tb stub)
 make package    # Vivado ipx package -> build/AIEPdiLoader.zip
-make import     # tapasco import build/AIEPdiLoader.zip as 10203 -p vck5000
+                # each zip is imported into Tapasco right after packaging (IDs 10203, 10204)
 ```
 
 `tapasco/pack_pdi_loader_kernel.tcl` defines the register map `CTRL 0x00`,

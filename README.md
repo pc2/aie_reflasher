@@ -85,8 +85,8 @@ make sim          # Verilator: 8 loader scenarios against the fake PLM, 5 stream
 ### 2. Package the PEs and import them into Tapasco
 
 ```
-make package      # Vivado ipx -> build/AIEPdiLoader.zip, build/DataStreamerVN.zip
-make import       # tapasco import ... as 10203 (AIEPdiLoader) and 10204 (DataStreamerVN)
+make package      # Vivado ipx -> build/AIEPdiLoader.zip, build/DataStreamerVN.zip, each followed by
+                  # tapasco import ... as 10203 (AIEPdiLoader) / 10204 (DataStreamerVN)
 ```
 
 ### 3. Install the platform plugin

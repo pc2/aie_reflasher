@@ -3,8 +3,8 @@
 #   make codegen     sus_compiler -> build/aie_pdi_loader.sv
 #   make sim         Verilator run of the PE against the fake-PLM testbench
 #   make sim-xsim    same testbench in Vivado xsim
-#   make package     Vivado IP packaging -> build/AIEPdiLoader.zip
-#   make import      tapasco import of that zip (ID $(PE_ID))
+#   make package     Vivado IP packaging of both PEs -> build/AIEPdiLoader.zip, build/DataStreamerVN.zip,
+#                    each imported into Tapasco right after packaging (IDs $(PE_ID), $(VN_ID))
 #   make link_plugin symlink tapasco/aie_reflasher_plugin.tcl into the Tapasco vck5000 plugin dir
 #   make jobfile     build/pdi-loader.json with ADF=$(ADF) substituted
 #   make bitstream   tapasco --jobsFile build/pdi-loader.json; copies the PDI (and debug_probes.ltx
@@ -34,8 +34,10 @@ endif
 TAPASCO_LIB        ?= $(firstword $(wildcard $(TAPASCO_PREFIX)/lib64/libtapasco.a $(TAPASCO_PREFIX)/lib/libtapasco.a \
                                              $(TAPASCO_PREFIX)/lib64/libtapasco.so $(TAPASCO_PREFIX)/lib/libtapasco.so))
 TAPASCO_PLUGIN_DIR ?= $(TAPASCO_HOME_TOOLFLOW)/vivado/platform/vck5000/plugins
-PE_ID ?= 10203    # AIEPdiLoader
-VN_ID ?= 10204    # DataStreamerVN (the Bluespec original used 8847)
+# Tapasco kernel IDs: AIEPdiLoader, DataStreamerVN (the Bluespec original used 8847).
+# No trailing comments here: make keeps the whitespace before them in the value.
+PE_ID ?= 10203
+VN_ID ?= 10204
 
 # AIE graph archive the bitstream is built with (the running design must match aie/libadf_a.pdi
 # or aie/libadf_b.pdi only in its PL interface; which one is loaded at boot does not matter).
@@ -63,7 +65,7 @@ CXXFLAGS ?= -std=gnu++20 -O2 -Wall
 TAPASCO_CXXFLAGS := -isystem $(TAPASCO_PREFIX)/include/tapasco
 TAPASCO_LDLIBS   := $(TAPASCO_LIB) -lpthread -ldl -lm -lrt -lutil
 
-.PHONY: all codegen sim sim-xsim package import link_plugin aie aie-a aie-b jobfile bitstream pdi check-pdi host clean
+.PHONY: all codegen sim sim-xsim package link_plugin aie aie-a aie-b jobfile bitstream pdi check-pdi host clean
 
 all: codegen host
 
@@ -102,6 +104,13 @@ $(BUILD)/AIEPdiLoader.zip: $(CODEGEN) tapasco/pack_pdi_loader_kernel.tcl
 	rm -f $@
 	cd $(BUILD)/pack_prj/AIEPdiLoader_ip && zip -qr $(abspath $@) .
 	tapasco import $(BUILD)/AIEPdiLoader.zip as $(PE_ID) -p vck5000
+
+$(BUILD)/DataStreamerVN.zip: $(CODEGEN_VN) tapasco/pack_data_streamer_vn.tcl
+	rm -rf $(BUILD)/pack_prj_vn && mkdir -p $(BUILD)/pack_prj_vn
+	cd $(BUILD)/pack_prj_vn && vivado -mode batch -source $(abspath tapasco/pack_data_streamer_vn.tcl) -tclargs $(PART) $(abspath $(CODEGEN_VN))
+	rm -f $@
+	cd $(BUILD)/pack_prj_vn/DataStreamerVN_ip && zip -qr $(abspath $@) .
+	tapasco import $(BUILD)/DataStreamerVN.zip as $(VN_ID) -p vck5000
 
 link_plugin: tapasco/aie_reflasher_plugin.tcl
 	@test -d "$(TAPASCO_PLUGIN_DIR)" || { echo "TAPASCO_PLUGIN_DIR=$(TAPASCO_PLUGIN_DIR) does not exist (source tapasco-setup.sh?)"; exit 1; }
