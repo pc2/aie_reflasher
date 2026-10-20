@@ -179,7 +179,7 @@ subsystem lookup for it, so it is the channel to impersonate when no A72 image e
 | Channel bit masks / buffer index | PMC `0x2`/1, IPI0 `0x4`/2, IPI1 `0x8`/3, ... IPI5 `0x80`/7 |
 | Message RAM | `0xFF3F0000 + src_index*0x200 + dst_index*0x40`, response at +0x20 |
 | Request X -> PMC | X's group, PMC target: `0xFF3F0000 + idx(X)*0x200 + 0x40` |
-| Response PMC -> X | PMC's group, X target: `0xFF3F0000 + 0x200 + idx(X)*0x40 + 0x20` |
+| Response PMC -> X | X's own request slot + 0x20: `0xFF3F0000 + idx(X)*0x200 + 0x40 + 0x20` (`xipipsu_buf.c`: Dest*0x200 + Src*0x40 + 0x20 with Src = PMC). IPI5: `0xFF3F0E60` |
 | Command words | `{0x030701, 0xF, addr_hi, addr_lo}`; `addr = 0x100_0000_0000 + Tapasco device offset` |
 | Handshake | write 4 words, write `0x2` to X's TRIG, poll X's OBS bit `0x2` until clear, read response[0] (PLMI status) and [1] (loader status) |
 
@@ -260,10 +260,10 @@ write64     0xFF3F0E44 0x0000000F      # PDI source = DDR
 write64     0xFF3F0E48 <pdi_addr_hi>   # 0x100_0000_0000 + Tapasco device offset
 write64     0xFF3F0E4C <pdi_addr_lo>
 mask_poll64 0xFF3F0E40 0xFFFFFFFF 0x00030701  # readback: message RAM really reachable
-write64     0xFF3F03E0 0xDEADBEEF      # sentinel in the PMC -> IPI5 response buffer
+write64     0xFF3F0E60 0xDEADBEEF      # sentinel in the response half of the same slot (request + 0x20)
 write64     0xFF380000 0x00000002      # IPI5.TRIG, PMC bit
 mask_poll64 0xFF380004 0x2 0x0         # IPI5.OBS: PLM acked
-mask_poll64 0xFF3F03E0 0xFFFFFFFF 0x0  # response[0] == 0: sentinel replaced by success (optional)
+mask_poll64 0xFF3F0E60 0xFFFFFFFF 0x0  # response[0] == 0: sentinel replaced by success (optional)
 ```
 
 `host/reflash_aie_pe.cpp` builds this stream, DMAs the partial PDI and the stream into DDR

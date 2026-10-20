@@ -13,8 +13,12 @@
 //   IPI<n> regs  0xFF330000 + n*0x10000 : TRIG +0x0, OBS +0x4
 //   bit masks    PMC 0x2 ; buffer index PMC 1, IPI<n> 2+n
 //   message RAM  0xFF3F0000 + src_idx*0x200 + dst_idx*0x40, response at +0x20
-//   request  IPI<n>->PMC : 0xFF3F0000 + (2+n)*0x200 + 1*0x40
-//   response PMC->IPI<n> : 0xFF3F0000 + 1*0x200 + (2+n)*0x40 + 0x20
+//   request  IPI<n>->PMC : 0xFF3F0000 + (2+n)*0x200 + 1*0x40   (slot "from n, to PMC")
+//   response PMC->IPI<n> : the same slot + 0x20. xipipsu_buf.c computes RESP as
+//                          Dest*0x200 + Src*0x40 + 0x20 with Src = PMC, Dest = n, i.e. the
+//                          responder answers inside the requester's slot. (First hardware
+//                          run returned the sentinel because the PE read 0x200+(2+n)*0x40+0x20,
+//                          which is where the PMC would get answers to messages IT sends to n.)
 //   IPI6 and PMC_NOBUF have no message buffers, so only channels 0..5 are usable.
 //   IPI5 is the PLM's "xsdb master": it skips the subsystem lookup for that channel,
 //   which makes it the safe choice on a design without isolation configuration.
@@ -128,9 +132,10 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     int#(FROM: IPI_REGS, TO: IPI_REGS + NUM_CHANNEL_VALUES * 65536) IPI_TRIG = IPI_REGS + ipi_channel * 65536
     int#(FROM: IPI_REGS, TO: IPI_REGS + NUM_CHANNEL_VALUES * 65536 + 4) IPI_OBS = IPI_TRIG + 4
     int#(FROM: MSG_RAM, TO: MSG_RAM + 8192) REQ_BUF  = MSG_RAM + (2 + ipi_channel) * 512 + 64       // -> PMC (idx 1)
-    int#(FROM: MSG_RAM, TO: MSG_RAM + 8192) RESP_BUF = MSG_RAM + 512 + (2 + ipi_channel) * 64 + 32  // PMC -> us, +0x20
+    int#(FROM: MSG_RAM, TO: MSG_RAM + 8256) RESP_BUF = REQ_BUF + 32                                 // PMC -> us: our slot + 0x20
 
-    trigger done : bool ok, int#(FROM: 0, TO: NUM_ERRS) error_code, bool[32] plmi, bool[32] loader
+    // cycles: clocks from start to done (saturates at TIMEOUT_CYCLES on error 3)
+    trigger done : bool ok, int#(FROM: 0, TO: NUM_ERRS) error_code, bool[32] plmi, bool[32] loader, int#(FROM: 0, TO: TIMEOUT_CYCLES + 1) cycles
 
     // what each step does
     bool step_is_write = step == 0 | step == 1 | step == 2 | step == 3 | step == 5 | step == 7
@@ -252,7 +257,7 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     }
 
     when cur_state == S_DONE {
-        done(err == ERR_NONE, err, plmi_status, loader_status)
+        done(err == ERR_NONE, err, plmi_status, loader_status, timer)
         cur_state = S_IDLE
     }
 
@@ -279,7 +284,7 @@ module AIEPdiLoader {
     gen int TIMEOUT_CYCLES = 1 << 28    // ~1 s at 250 MHz
 
     // input_regs[0] = PS physical address of the partial PDI (0x100_0000_0000 + Tapasco offset)
-    // input_regs[1] = AxPROT/AxCACHE bits, IPI channel, command override; see ctrl_bits below
+    // input_regs[1] = IPI channel and command override; see ctrl_bits below
     tapasco_ctrl_slave#(NUM_INPUT_REGS: 2, ADDR_WIDTH: CTRL_ADDR_WIDTH, AXI_WIDTH: CTRL_AXI_WIDTH) ctrl
 
     domain axi_control
@@ -315,22 +320,22 @@ module AIEPdiLoader {
 
     pmc_pdi_loader #(ADDR_WIDTH: MEM_ADDR_WIDTH, TIMEOUT_CYCLES: TIMEOUT_CYCLES) loader
 
-    // input_regs[1] layout: [0:3] awprot, [4:7] arprot, [8:12] awcache, [12:16] arcache,
-    //                       [16:19] IPI channel 0..5 (the host passes 5, the xsdb master),
+    // input_regs[1] layout: [0:3] IPI channel 0..5 (host default 2; 5 = xsdb master),
     //                       [32:64] IPI command word override (0 = LOAD_SUBSYSTEM_PDI)
     bool[64] ctrl_bits = ctrl.input_regs[1]
 
     // AXI4-Full master: single-beat transactions wrapped around the AXI4-Lite core,
     // 64-bit address, 32-bit data, no ID signals. Connect to the CIPS S_AXI_LPD port
-    // (through a SmartConnect), never through the NoC.
+    // directly, never through the NoC. AxPROT = 0 (secure, unprivileged, data) and
+    // AxCACHE = 0 (device) are fixed: verified on hardware 2026-10-20.
     domain ipi_lpd_interface
     output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) ipi_lpd_interface_awaddr'0   = loader.awaddr
     output int#(FROM: 0, TO: 256)                 ipi_lpd_interface_awlen'0    = 0
     output int#(FROM: 0, TO: 8)                   ipi_lpd_interface_awsize'0   = 2      // 4 bytes
     output bool[2]                                ipi_lpd_interface_awburst'0  = 2'b01  // INCR
     output bool                                   ipi_lpd_interface_awlock'0   = false
-    output bool[4]                                ipi_lpd_interface_awcache'0  = ctrl_bits[8:12]
-    output bool[3]                                ipi_lpd_interface_awprot'0   = ctrl_bits[0:3]
+    output bool[4]                                ipi_lpd_interface_awcache'0  = 4'b0000
+    output bool[3]                                ipi_lpd_interface_awprot'0   = 3'b000
     output int#(FROM: 0, TO: 16)                  ipi_lpd_interface_awqos'0    = 0
     output int#(FROM: 0, TO: 16)                  ipi_lpd_interface_awregion'0 = 0
     output bool                                   ipi_lpd_interface_awvalid'0  = loader.awvalid
@@ -353,8 +358,8 @@ module AIEPdiLoader {
     output int#(FROM: 0, TO: 8)                   ipi_lpd_interface_arsize'0   = 2
     output bool[2]                                ipi_lpd_interface_arburst'0  = 2'b01
     output bool                                   ipi_lpd_interface_arlock'0   = false
-    output bool[4]                                ipi_lpd_interface_arcache'0  = ctrl_bits[12:16]
-    output bool[3]                                ipi_lpd_interface_arprot'0   = ctrl_bits[4:7]
+    output bool[4]                                ipi_lpd_interface_arcache'0  = 4'b0000
+    output bool[3]                                ipi_lpd_interface_arprot'0   = 3'b000
     output int#(FROM: 0, TO: 16)                  ipi_lpd_interface_arqos'0    = 0
     output int#(FROM: 0, TO: 16)                  ipi_lpd_interface_arregion'0 = 0
     output bool                                   ipi_lpd_interface_arvalid'0  = loader.arvalid
@@ -370,12 +375,13 @@ module AIEPdiLoader {
     loader.rvalid  = ipi_lpd_interface_rvalid
 
     when ctrl.start {
-        loader.start(ctrl.input_regs[0], ctrl_bits[32:64], BitsToUInt(ctrl_bits[16:19]))
+        loader.start(ctrl.input_regs[0], ctrl_bits[32:64], BitsToUInt(ctrl_bits[0:3]))
     }
 
     // Return value: [0:32] PLMI status (0 = success) or 0xFFFFFF00|err for local errors,
-    //               [32:64] XilLoader status
-    when loader.done : bool ok, int#(FROM: 0, TO: 7) error_code, bool[32] plmi, bool[32] loader_st {
+    //               [32:64] XilLoader status when the PLM reported an error (err 4),
+    //                       otherwise the handshake length in design clock cycles
+    when loader.done : bool ok, int#(FROM: 0, TO: 7) error_code, bool[32] plmi, bool[32] loader_st, int#(FROM: 0, TO: TIMEOUT_CYCLES + 1) cycles {
         bool[64] result
         when error_code == 0 | error_code == 4 {
             result[0:32] = plmi
@@ -384,7 +390,11 @@ module AIEPdiLoader {
             local_err[0:8] = UIntToBits(error_code)
             result[0:32] = local_err
         }
-        result[32:64] = loader_st
+        when error_code == 4 {
+            result[32:64] = loader_st
+        } else {
+            result[32:64] = UIntToBits(cycles)
+        }
         ctrl.finish(result)
     }
 

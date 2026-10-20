@@ -17,7 +17,9 @@ the Tapasco side changes are small.
 - Addresses are computed per request from the `channel` argument n (0..5; 5 is the PLM's
   xsdb-master channel, the only one served without a subsystem configuration):
   TRIG/OBS at `0xFF330000 + n*0x10000`, request buffer
-  `0xFF3F0000 + (2+n)*0x200 + 0x40`, response buffer `0xFF3F0000 + 0x200 + (2+n)*0x40 + 0x20`.
+  `0xFF3F0000 + (2+n)*0x200 + 0x40`, response buffer = request buffer `+ 0x20` (the PLM
+  answers inside the requester's slot, `xipipsu_buf.c`; the first hardware run read
+  `0x200 + (2+n)*0x40 + 0x20` instead and got its own sentinel back).
   IPI6 and PMC_NOBUF have no message buffer, so n > 5 is rejected with error 6 before
   the bus is touched. (2026-10-20: was a `gen` parameter `IPI_CHANNEL` before.)
 - Sequencer: a 10-step table driven by a 6-state machine
@@ -41,10 +43,12 @@ the Tapasco side changes are small.
 ### `AIEPdiLoader` (Tapasco PE)
 
 - `tapasco_ctrl_slave#(NUM_INPUT_REGS: 2)`: reg 0 = PS physical address of the PDI
-  (`0x100_0000_0000 + Tapasco device offset`), reg 1 = `[0:3]` AWPROT, `[4:7]` ARPROT
-  (0 = secure/unprivileged, which the IPI apertures accept), `[8:12]` AWCACHE, `[12:16]`
-  ARCACHE, `[16:19]` IPI channel (host default 5), `[32:64]` IPI command word override
-  (0 = LOAD_SUBSYSTEM_PDI, `0x010100` = XilPlmi FEATURES ping).
+  (`0x100_0000_0000 + Tapasco device offset`), reg 1 (`IPI_CONFIG`) = `[0:3]` IPI channel
+  (host default 2), `[32:64]` IPI command word override (0 = LOAD_SUBSYSTEM_PDI, `0x010100`
+  = XilPlmi FEATURES ping). AxPROT/AxCACHE are fixed at 0 (secure, unprivileged, device):
+  verified on hardware.
+- Return value: `[0:32]` PLMI status or `0xFFFFFF00|err`; `[32:64]` XilLoader status on a
+  PLM error, otherwise the handshake length in design clock cycles.
 - Exports `s_axi_control` and the `small_axil` master (64-bit address, 32-bit data) with
   the exact port names of the old PE, so `pack_*.tcl` and the Tapasco plugin stay similar.
   No bulk port any more.
@@ -125,15 +129,18 @@ and `;` is not a statement separator in SUS.
   over ISR bit indices 0..3, never reaching bit 7: the request is masked and dropped
   silently. Fix: enable IPI0..IPI6 in the CIPS (plugin updated). Verify after rebuild with
   `plm set-log-level 0x4` from xsdb on the DPC target: it must acknowledge now.
+- 2026-10-20 (evening): with IPI0..6 enabled the reflash works on hardware, on IPI5 and on
+  IPI2 alike (so the subsystem lookup is not a problem on this design). The PE returned
+  `0xDEADBEEF` as PLMI status: it read the response from the wrong slot (see section 1).
+  Fixed; host default channel moved to IPI2 to stay out of xsdb's way; AxPROT/AxCACHE
+  hardcoded to 0; return value now carries the cycle count.
 
 ## 8. Open points
 
 - `TIMEOUT_CYCLES = 2^28` is a guess at the PLM's worst case for a ~100 KB PDI; raise it if
   big designs (multi-MB ELFs) hit error 3 while the PLM is still working.
-- IPI5 is shared with xsdb. If JTAG debugging and reflashing must coexist, try
-  `reflash-aie-loader --ipi 0..4`; whether the PLM accepts a channel that no subsystem
-  claims is untested (for non-IPI5 channels it calls `XPmSubsystem_GetSubSysIdByIpiMask`,
-  which returns INVALID_SUBSYSID on a design without isolation config). The plugin maps
-  psv_ipi_0..5 so this can be tried without a rebuild.
+- IPI5 is shared with xsdb, so the host defaults to IPI2 (verified on hardware); any of
+  IPI0..4 should behave the same since no A72/R5 software exists in a Tapasco design.
+  `--ipi 5` remains available.
 - The PE issues secure (AxPROT[1]=0) transactions; if a future design enables LPD XPPU
   protection, the PL master ID will need an aperture entry.

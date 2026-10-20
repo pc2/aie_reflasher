@@ -53,7 +53,7 @@ module fake_plm_axil #(
     localparam logic [31:0] MSG_RAM  = 32'hFF3F0000;
     logic [31:0] IPI_BASE, RESP_BUF;
     assign IPI_BASE = 32'hFF330000 + ipi_channel * 32'h10000;
-    assign RESP_BUF = MSG_RAM + 32'h200 + (2 + ipi_channel) * 32'h40 + 32'h20;
+    assign RESP_BUF = MSG_RAM + (2 + ipi_channel) * 32'h200 + 32'h40 + 32'h20;  // requester's slot + 0x20 (xipipsu_buf.c)
 
     logic [31:0] ram [0:1023];   // 4 KiB message RAM, word addressed
     logic        obs_pmc;        // OBS bit 1 of our channel

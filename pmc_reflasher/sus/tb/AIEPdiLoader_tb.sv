@@ -76,12 +76,12 @@ module AIEPdiLoader_tb;
         logic [63:0] r;
         plm_status = st; plm_never_ack = never; decerr_all = decerr; obs_preset = busy; ipi_channel = chan_model;
         ctrl_write(12'h020, 64'h0000_0100_0020_0000);  // PDI at PS 0x100_0020_0000
-        ctrl_write(12'h030, (cmdw << 32) | (64'(chan_pe) << 16)); // AxPROT = 0, channel [18:16], command override [63:32]
+        ctrl_write(12'h030, (cmdw << 32) | 64'(chan_pe)); // channel [2:0], command override [63:32]
         ctrl_write(12'h000, 64'h1);                     // start
         wait (intr);
         ctrl_read(12'h010, r);                           // result register (tapasco_ctrl_slave layout)
         if (r[31:0] !== expect_lo[31:0]) $error("%s: result[31:0]=%h expected %h", name, r[31:0], expect_lo[31:0]);
-        else $display("%s: OK result=%h", name, r);
+        else $display("%s: OK result=%h (hi = %0d: cycles, or loader status on PLM error)", name, r, r[63:32]);
         ctrl_write(12'h000, 64'h0);                     // tlkm-style interrupt clear write, harmless
         repeat (20) @(posedge aclk);
     endtask

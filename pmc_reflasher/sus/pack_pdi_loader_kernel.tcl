@@ -2,6 +2,8 @@
 #   vivado -mode batch -source pack_pdi_loader_kernel.tcl -tclargs <part> <codegen.sv>
 # Derived from ../../pack_reflash_kernel.tcl; only the register map and the bus
 # interfaces differ (single AXI4-Full master ipi_lpd_interface).
+# Return register (0x10): [31:0] PLMI status or 0xFFFFFF00|local error, [63:32] XilLoader
+# status on PLM error, otherwise handshake length in design clock cycles.
 
 set PART [lindex $argv 0]
 set SV   [lindex $argv 1]
@@ -31,10 +33,10 @@ set_property description    {PS physical address of the partial PDI in card DDR 
 set_property address_offset {0x020}           [ipx::get_registers PDI_ADDRESS -of_objects $CTRL_ADDR_BLOCK]
 set_property size           {64}              [ipx::get_registers PDI_ADDRESS -of_objects $CTRL_ADDR_BLOCK]
 
-ipx::add_register AXI_CONFIG $CTRL_ADDR_BLOCK
-set_property description    {[2:0] AWPROT, [6:4] ARPROT, [11:8] AWCACHE, [15:12] ARCACHE, [18:16] IPI channel 0..5 (5 = xsdb master), [63:32] IPI command word override (0 = LOAD_SUBSYSTEM_PDI)} [ipx::get_registers AXI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
-set_property address_offset {0x030}           [ipx::get_registers AXI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
-set_property size           {64}              [ipx::get_registers AXI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
+ipx::add_register IPI_CONFIG $CTRL_ADDR_BLOCK
+set_property description    {[2:0] IPI channel 0..5 (host default 2; 5 = xsdb master), [63:32] IPI command word override (0 = LOAD_SUBSYSTEM_PDI). AxPROT/AxCACHE are fixed at 0.} [ipx::get_registers IPI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
+set_property address_offset {0x030}           [ipx::get_registers IPI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
+set_property size           {64}              [ipx::get_registers IPI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
 
 # PDI_ADDRESS is a PS address, not a Tapasco buffer handle: no ASSOCIATED_BUSIF, so
 # Tapasco does not try to allocate/translate it.

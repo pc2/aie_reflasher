@@ -1,30 +1,23 @@
 # Tapasco plugin: connect the AIEPdiLoader PE's ipi_lpd_interface straight to the CIPS
 # S_AXI_LPD port (direct PL-to-LPD path, never through the NoC) and enable all IPI
-# channels. The PE selects the channel per request (AXI_CONFIG[18:16]), so psv_ipi_0..5
-# and psv_ipi_buffer must all be mapped into its address space; that is checked below.
+# channels. The PE selects the channel per request (IPI_CONFIG[2:0]; host default IPI2,
+# IPI5 is xsdb's), so psv_ipi_0..5 and psv_ipi_buffer must all be mapped into its address
+# space; that is checked after assign_bd_address below.
 #
 # Why S_AXI_LPD: Vivado's CIPS model exposes the IPI message RAM (psv_ipi_buffer,
 # 0xFF3F0000, 4 KiB) only on the direct PL-to-PS slave ports, never on the NoC-side
 # NOC_PMC_AXI_0 port. A NoC output toward it would get a 1 GB PL_LO aperture that can
 # never intersect the fixed LPD addresses (BD 41-1743).
 #
-# Address handling: S_AXI_LPD exposes ~100 fixed-address PS/PMC segments. Tapasco's
-# addressmap::construct_address_map (runs between "pre-wiring" and validate) tries to
-# place every segment a PE master can reach, starting at offset 0, which Vivado rejects
-# for fixed-address slaves (BD 41-1075 on psv_pmc_qspi_ospi_flash_0). So:
-#   1. extend platform::get_ignored_segments with every S_AXI_LPD segment, and
-#   2. in the "post-address-map" hook (called inside construct_address_map, before its
-#      segment loop) assign the two segments we need at their fixed addresses and
-#      exclude all the others from the PE's address space.
+# Address handling: S_AXI_LPD exposes ~100 fixed-address PS/PMC segments. Connecting the
+# port in the "post-platform" hook (after Tapasco's own construct_address_map) and then
+# calling assign_bd_address lets Vivado place them all at their fixed addresses.
 #
 # Enable with  { "Feature": "aie_reflasher_ipi", "Properties": {} }.
 
 namespace eval aie_reflasher_ipi {
 
   variable PE_SPACE /arch/target_ip_01_000/internal_target_ip_01_000/ipi_lpd_interface
-
-  variable PE_SPACE /arch/target_ip_01_000/internal_target_ip_01_000/ipi_lpd_interface
-  variable WANTED   {pspmc_0_psv_ipi_5 pspmc_0_psv_ipi_buffer}
 
   # "pre-platform": the PE's master was auto-connected to the memory subsystem by the
   # arch; remove that so it can go to the CIPS instead.
