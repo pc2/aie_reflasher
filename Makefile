@@ -22,8 +22,16 @@ BUILD ?= build
 BIN   ?= bin
 PART  ?= xcvc1902-vsvd1760-2MP-e-S
 
-# Tapasco runtime install (tapasco-build-libs) and plugin directory
+# Tapasco runtime install (tapasco-build-libs puts it under $TAPASCO_WORK_DIR/build/install;
+# tapasco-setup.sh exports Tapasco_DIR = <prefix>/share/Tapasco/cmake). The library lands in
+# lib or lib64 depending on the distribution, as .a or (with --shared) .so.
+ifneq ($(Tapasco_DIR),)
+TAPASCO_PREFIX     ?= $(abspath $(Tapasco_DIR)/../../..)
+else
 TAPASCO_PREFIX     ?= $(TAPASCO_WORK_DIR)/build/install/usr/local
+endif
+TAPASCO_LIB        ?= $(firstword $(wildcard $(TAPASCO_PREFIX)/lib64/libtapasco.a $(TAPASCO_PREFIX)/lib/libtapasco.a \
+                                             $(TAPASCO_PREFIX)/lib64/libtapasco.so $(TAPASCO_PREFIX)/lib/libtapasco.so))
 TAPASCO_PLUGIN_DIR ?= $(TAPASCO_HOME_TOOLFLOW)/vivado/platform/vck5000/plugins
 PE_ID ?= 10203
 
@@ -50,7 +58,7 @@ CODEGEN   := $(BUILD)/aie_pdi_loader.sv
 CXX      ?= g++
 CXXFLAGS ?= -std=gnu++20 -O2 -Wall
 TAPASCO_CXXFLAGS := -isystem $(TAPASCO_PREFIX)/include/tapasco
-TAPASCO_LDLIBS   := $(TAPASCO_PREFIX)/lib/libtapasco.a -lpthread -ldl -lm -lrt -lutil
+TAPASCO_LDLIBS   := $(TAPASCO_LIB) -lpthread -ldl -lm -lrt -lutil
 
 .PHONY: all codegen sim sim-xsim package import plugin jobfile bitstream pdi check-pdi host clean
 
@@ -116,7 +124,7 @@ host: $(BIN)/reflash-aie-loader $(BIN)/vector-norm
 
 define HOST_BUILD
 	@mkdir -p $(BIN)
-	@test -f "$(TAPASCO_PREFIX)/lib/libtapasco.a" || { echo "libtapasco.a not found under TAPASCO_PREFIX=$(TAPASCO_PREFIX) (source tapasco-setup.sh and run tapasco-build-libs)"; exit 1; }
+	@test -n "$(TAPASCO_LIB)" || { echo "libtapasco not found in $(TAPASCO_PREFIX)/lib{,64} (source tapasco-setup.sh and run tapasco-build-libs, or pass TAPASCO_LIB=/path/to/libtapasco.a)"; exit 1; }
 	$(CXX) $(CXXFLAGS) $(TAPASCO_CXXFLAGS) $< -o $@ $(TAPASCO_LDLIBS)
 endef
 
