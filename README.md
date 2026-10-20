@@ -108,14 +108,15 @@ The plugin is activated by the `aie_reflasher_plugin` feature in the job file. I
 Set `"ila": "true"` in the feature properties to add an AXI ILA on the LPD port; the probe
 file is written next to the bitstream.
 
-### 4. AIE graphs (optional, the archives are checked in)
+### 4. AIE graphs
 
 ```
 make aie          # aiecompiler: aie/src -> aie/libadf_a.a, and with -DDOUBLE_OUTPUT -> aie/libadf_b.a
 ```
 
 Both archives come from the same tree; `sum_sqrt.cpp` multiplies the norm by 2.0 under
-`#ifdef DOUBLE_OUTPUT`, which `make aie-b` defines (`make aie-a` builds the plain one).
+`#ifdef DOUBLE_OUTPUT`. The archives are ordinary make targets, so the job file and the
+partial PDIs build them on demand when they are missing or older than `aie/src`.
 `graph.h` pins the three PLIOs to shim tiles 12, 13 and 14. That pinning is what makes the graphs
 interchangeable at runtime: the PL side of the design is built once against those tiles,
 and any graph that keeps them can be loaded by the reflasher.
