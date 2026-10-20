@@ -5,12 +5,14 @@
 #   make sim-xsim    same testbench in Vivado xsim
 #   make package     Vivado IP packaging -> build/AIEPdiLoader.zip
 #   make import      tapasco import of that zip (ID $(PE_ID))
-#   make plugin      copy tapasco/aie_reflasher_ipi.tcl into the Tapasco vck5000 plugin dir
+#   make link_plugin symlink tapasco/aie_reflasher_plugin.tcl into the Tapasco vck5000 plugin dir
 #   make jobfile     build/pdi-loader.json with ADF=$(ADF) substituted
-#   make bitstream   tapasco --jobsFile build/pdi-loader.json
-#   make pdi         aie/libadf_{a,b}.pdi: AIE-only partial PDIs from the libadf archives
+#   make bitstream   tapasco --jobsFile build/pdi-loader.json; copies the PDI (and debug_probes.ltx
+#                    if the plugin's ILA was enabled) to build/bitstream.pdi, build/debug_probes.ltx
+#   make pdi         aie/libadf_{a,b}.pdi: AIE-only partial PDIs from the libadf archives, stamped with
+#                    the IDCODE of build/bitstream.pdi
 #   make check-pdi   structural check of the partial PDIs
-#   make host        bin/reflash-aie-loader and bin/vector-norm (prebuilt copies are checked in)
+#   make host        build/reflash-aie-loader and build/vector-norm (prebuilt copies are checked in)
 #   make all         codegen + host (everything that needs neither Vivado nor bootgen)
 #
 # Environment: `source <tapasco workspace>/tapasco-setup.sh` provides TAPASCO_WORK_DIR and
@@ -19,7 +21,6 @@
 
 SHELL := /bin/bash
 BUILD ?= build
-BIN   ?= bin
 PART  ?= xcvc1902-vsvd1760-2MP-e-S
 
 # Tapasco runtime install (tapasco-build-libs puts it under $TAPASCO_WORK_DIR/build/install;
@@ -40,17 +41,11 @@ VN_ID ?= 10204    # DataStreamerVN (the Bluespec original used 8847)
 # or aie/libadf_b.pdi only in its PL interface; which one is loaded at boot does not matter).
 ADF ?= $(abspath aie/libadf_a.a)
 
-# IDCODE stamped into the partial PDIs. The PLM rejects a PDI whose IDCODE differs from the
-# silicon. 0x14ca8093 / 1 is the production VCK5000; set REF_PDI=<pdi that boots on your card>
-# to copy the values from there instead.
-ID_CODE     ?= 0x14ca8093
-EXT_ID_CODE ?= 0x1
-REF_PDI     ?=
-ifneq ($(REF_PDI),)
-PDI_ID_ARGS := --like $(abspath $(REF_PDI))
-else
-PDI_ID_ARGS := --id-code $(ID_CODE) --ext-id-code $(EXT_ID_CODE)
-endif
+# Where Tapasco leaves the composed design, and the local copy `make bitstream` keeps. The
+# partial PDIs copy their IDCODE from that copy: the PLM rejects a PDI whose IDCODE differs
+# from the silicon, and a PDI that boots on the card is the authoritative source for it.
+COMPOSE_DIR := $(TAPASCO_WORK_DIR)/compose/axi4mm/vck5000/DataStreamerVN__AIEPdiLoader/001_001/312.5+AI-Engine+DMA-Streaming+aie_reflasher_plugin
+BITSTREAM   := $(BUILD)/bitstream.pdi
 
 SUS_LIB      := sus-xrt/axi_stream.sus sus-xrt/axi_lite.sus sus-xrt/axi_memory.sus sus-tapasco/sus/tapasco_ctrl_slave.sus
 SUS_FILES    := $(SUS_LIB) sus/aie_pdi_loader.sus
@@ -68,7 +63,7 @@ CXXFLAGS ?= -std=gnu++20 -O2 -Wall
 TAPASCO_CXXFLAGS := -isystem $(TAPASCO_PREFIX)/include/tapasco
 TAPASCO_LDLIBS   := $(TAPASCO_LIB) -lpthread -ldl -lm -lrt -lutil
 
-.PHONY: all codegen sim sim-xsim package import plugin jobfile bitstream pdi check-pdi host clean
+.PHONY: all codegen sim sim-xsim package import link_plugin aie aie-a aie-b jobfile bitstream pdi check-pdi host clean
 
 all: codegen host
 
@@ -117,10 +112,10 @@ import: $(BUILD)/AIEPdiLoader.zip $(BUILD)/DataStreamerVN.zip
 	tapasco import $(BUILD)/AIEPdiLoader.zip as $(PE_ID) -p vck5000
 	tapasco import $(BUILD)/DataStreamerVN.zip as $(VN_ID) -p vck5000
 
-plugin: tapasco/aie_reflasher_ipi.tcl
+link_plugin: tapasco/aie_reflasher_plugin.tcl
 	@test -d "$(TAPASCO_PLUGIN_DIR)" || { echo "TAPASCO_PLUGIN_DIR=$(TAPASCO_PLUGIN_DIR) does not exist (source tapasco-setup.sh?)"; exit 1; }
-	cp $< $(TAPASCO_PLUGIN_DIR)/
-	@echo "installed $< -> $(TAPASCO_PLUGIN_DIR)/"
+	ln -sfn $(abspath $<) $(TAPASCO_PLUGIN_DIR)/$(notdir $<)
+	@echo "linked $(TAPASCO_PLUGIN_DIR)/$(notdir $<) -> $(abspath $<)"
 
 jobfile: $(BUILD)/pdi-loader.json
 
@@ -130,8 +125,13 @@ $(BUILD)/pdi-loader.json: tapasco/pdi-loader.json
 	sed 's,@ADF@,$(ADF),' $< > $@
 	@echo "wrote $@ (adf = $(ADF))"
 
-bitstream: $(BUILD)/pdi-loader.json
+bitstream: $(BITSTREAM)
+
+$(BITSTREAM): $(BUILD)/pdi-loader.json $(BUILD)/AIEPdiLoader.zip $(BUILD)/DataStreamerVN.zip
 	tapasco --jobsFile $<
+	cp "$$(ls -t $(COMPOSE_DIR)/*.pdi | head -1)" $(BITSTREAM)
+	-cp $(COMPOSE_DIR)/debug_probes.ltx $(BUILD)/ 2>/dev/null
+	@echo "bitstream: $(BITSTREAM)$$(test -f $(BUILD)/debug_probes.ltx && echo ', probes: $(BUILD)/debug_probes.ltx')"
 
 # ---------------------------------------------------------------- AIE graphs
 # One source tree; graph B is the same code built with -DDOUBLE_OUTPUT (sum_sqrt.cpp).
@@ -149,26 +149,28 @@ aie-%:
 # ---------------------------------------------------------------- partial PDIs
 pdi: aie/libadf_a.pdi aie/libadf_b.pdi
 
-aie/%.pdi: aie/%.a
-	tools/make_aie_pdi.sh $< $@ $(PDI_ID_ARGS)
+# The partial PDIs depend on the full bitstream: a missing build/bitstream.pdi builds it first.
+aie/%.pdi: aie/%.a $(BITSTREAM)
+	tools/make_aie_pdi.sh $< $@ --like $(abspath $(BITSTREAM))
 
 check-pdi: aie/libadf_a.pdi aie/libadf_b.pdi
 	python3 tools/pdi_info.py aie/libadf_a.pdi
 	python3 tools/pdi_info.py aie/libadf_b.pdi
 
 # ---------------------------------------------------------------- host tools
-host: $(BIN)/reflash-aie-loader $(BIN)/vector-norm
+host: $(BUILD)/reflash-aie-loader $(BUILD)/vector-norm
 
 define HOST_BUILD
-	@mkdir -p $(BIN)
+	@mkdir -p $(BUILD)
 	@test -n "$(TAPASCO_LIB)" || { echo "libtapasco not found in $(TAPASCO_PREFIX)/lib{,64} (source tapasco-setup.sh and run tapasco-build-libs, or pass TAPASCO_LIB=/path/to/libtapasco.a)"; exit 1; }
 	$(CXX) $(CXXFLAGS) $(TAPASCO_CXXFLAGS) $< -o $@ $(TAPASCO_LDLIBS)
 endef
 
-$(BIN)/reflash-aie-loader: host/reflash_aie_loader.cpp
+$(BUILD)/reflash-aie-loader: host/reflash_aie_loader.cpp
 	$(HOST_BUILD)
-$(BIN)/vector-norm: host/vector_norm.cpp
+$(BUILD)/vector-norm: host/vector_norm.cpp
 	$(HOST_BUILD)
 
 clean:
 	rm -rf $(BUILD)
+	

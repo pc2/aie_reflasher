@@ -73,7 +73,7 @@ associated bus interface.
 
 The PE now has a single AXI4-Lite master and it must reach the LPD directly:
 
-1. Enable IPI0..6 and `S_AXI_LPD` on the CIPS (`tapasco/aie_reflasher_ipi.tcl`).
+1. Enable IPI0..6 and `S_AXI_LPD` on the CIPS (`tapasco/aie_reflasher_plugin.tcl`).
 2. Replace the "join bulk and small" step: there is no bulk port, so connect
    `target_ip/small_axil` through a SmartConnect straight to `/host/versal_cips_0/S_AXI_LPD`
    (AXI4-Lite -> AXI4 conversion is done by the SmartConnect; clock = design clock on

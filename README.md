@@ -42,12 +42,12 @@ host.
 | `sus/aie_pdi_loader.sus` | the `AIEPdiLoader` PE and its reusable core `pmc_pdi_loader` |
 | `sus/data_streamer_vn.sus` | the `DataStreamerVN` PE: DMA stream in, x/y streams to the AIE, z stream back, DMA stream out |
 | `sus/tb/` | SystemVerilog testbenches (Verilator or xsim): fake IPI block + PLM for the loader, behavioural AIE for the streamer |
-| `tapasco/aie_reflasher_ipi.tcl` | Tapasco vck5000 plugin: enables IPI0..6 and `S_AXI_LPD` on the CIPS and wires the PE to it |
+| `tapasco/aie_reflasher_plugin.tcl` | Tapasco vck5000 plugin: enables IPI0..6 and `S_AXI_LPD` on the CIPS and wires the PE to it |
 | `tapasco/pack_pdi_loader_kernel.tcl`, `tapasco/pack_data_streamer_vn.tcl` | Vivado IP packaging of the two PEs (register maps) |
 | `tapasco/pdi-loader.json` | Tapasco job file (`@ADF@` is filled in by `make jobfile`) (`DataStreamerVN` + `AIEPdiLoader` + AI-Engine + DMA-Streaming) |
 | `host/reflash_aie_loader.cpp` | host tool that performs a reflash |
 | `host/vector_norm.cpp` | host tool that runs the vector-norm example to check which AIE graph is live |
-| `bin/` | prebuilt copies of the two host tools (`make host` rebuilds them in place) |
+| `build/reflash-aie-loader`, `build/vector-norm` | prebuilt host tools, the only tracked files in `build/` (`make host` rebuilds them in place) |
 | `tools/make_aie_pdi.sh` | `libadf.a` to AIE-only partial PDI (bootgen) |
 | `tools/pdi_info.py` | dumps and sanity-checks a PDI; `tools/cdo_parser.py`, `tools/cdo_decode.py` decode CDO streams |
 | `aie/src/` | the Vector-Norm AIE graph (from tapasco-examples, PLIOs pinned to fixed shim tiles); `-DDOUBLE_OUTPUT` gives graph B |
@@ -92,10 +92,10 @@ make import       # tapasco import ... as 10203 (AIEPdiLoader) and 10204 (DataSt
 ### 3. Install the platform plugin
 
 ```
-make plugin       # copies tapasco/aie_reflasher_ipi.tcl to $TAPASCO_HOME_TOOLFLOW/vivado/platform/vck5000/plugins/
+make plugin       # copies tapasco/aie_reflasher_plugin.tcl to $TAPASCO_HOME_TOOLFLOW/vivado/platform/vck5000/plugins/
 ```
 
-The plugin is activated by the `aie_reflasher_ipi` feature in the job file. It
+The plugin is activated by the `aie_reflasher_plugin` feature in the job file. It
 
 - enables IPI0..IPI6 on the CIPS. All of them are required: the per-design 2023.1 PLM only
   scans as many IPI interrupt bits as there are IPI instances in the design, so with fewer
@@ -127,8 +127,9 @@ make jobfile ADF=$PWD/aie/libadf_a.a   # build/pdi-loader.json
 make bitstream                         # tapasco --jobsFile build/pdi-loader.json
 ```
 
-The PDI ends up under `$TAPASCO_WORK_DIR/compose/axi4mm/vck5000/` as
-`axi4mm-vck5000--DataStreamerVN_1_AIEPdiLoader_1--313.pdi`. Load it with `tapasco-load-bitstream`.
+Tapasco composes the design under `$TAPASCO_WORK_DIR/compose/axi4mm/vck5000/`; the target
+copies the resulting PDI to `build/bitstream.pdi`, plus `build/debug_probes.ltx` when the
+plugin's ILA was enabled. Load it with `tapasco-load-bitstream build/bitstream.pdi`.
 
 ### 6. Build the partial PDIs
 
@@ -139,24 +140,25 @@ make check-pdi    # structure and IDCODE check
 
 `tools/make_aie_pdi.sh` extracts the six `aie.cdo.*.bin` sections from the archive and wraps
 them into a partial PDI with one `aie_image` (id `0x1c000000`), the same image Tapasco appends
-to the boot PDI. The IDCODE must match the silicon or the PLM refuses the image; the default
-is the production VCK5000 (`0x14ca8093` / `1`). To copy it from a PDI that already boots on
-your card instead: `make pdi REF_PDI=/path/to/full.pdi`.
+to the boot PDI. The IDCODE in its header must match the silicon or the PLM refuses the
+image, so it is copied from `build/bitstream.pdi`, the full PDI from the previous step. The
+partial PDIs depend on it, so `make pdi` runs the bitstream build first if that file is
+missing.
 
 ### 7. Build the host tools
 
 ```
-make host         # bin/reflash-aie-loader, bin/vector-norm
+make host         # build/reflash-aie-loader, build/vector-norm
 ```
 
 ### 8. Reflash
 
 ```
-bin/vector-norm                      # design A: SUCCESS
-bin/reflash-aie-loader aie/libadf_b.pdi
-bin/vector-norm --expect-scale 2     # design B: SUCCESS (every output doubled)
-bin/reflash-aie-loader aie/libadf_a.pdi
-bin/vector-norm                      # back to A
+build/vector-norm                      # design A: SUCCESS
+build/reflash-aie-loader aie/libadf_b.pdi
+build/vector-norm --expect-scale 2     # design B: SUCCESS (every output doubled)
+build/reflash-aie-loader aie/libadf_a.pdi
+build/vector-norm                      # back to A
 ```
 
 A successful run prints the IPI channel, the PLMI status (`lo=0x0`) and the handshake

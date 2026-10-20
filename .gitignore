@@ -1,4 +1,6 @@
-build/
+build/*
+!build/reflash-aie-loader
+!build/vector-norm
 __pycache__/
 *.log
 *.jou
