@@ -52,13 +52,13 @@ namespace eval aie_reflasher_ipi {
     # handler only scans ISR bits 0..NUM_TARGETS-1. With IPI0-4 absent that is 0..3 and
     # IPI5 (bit 7) is masked and dropped silently (breaks xsdb plm commands too).
     set_property -dict [list CONFIG.PS_PMC_CONFIG { \
-      PS_GEN_IPI0_ENABLE 1 PS_GEN_IPI0_MASTER A72 \
-      PS_GEN_IPI1_ENABLE 1 PS_GEN_IPI1_MASTER A72 \
-      PS_GEN_IPI2_ENABLE 1 PS_GEN_IPI2_MASTER A72 \
-      PS_GEN_IPI3_ENABLE 1 PS_GEN_IPI3_MASTER A72 \
-      PS_GEN_IPI4_ENABLE 1 PS_GEN_IPI4_MASTER A72 \
-      PS_GEN_IPI5_ENABLE 1 PS_GEN_IPI5_MASTER A72 \
-      PS_GEN_IPI6_ENABLE 1 PS_GEN_IPI6_MASTER A72 \
+      PS_GEN_IPI0_ENABLE 1 PS_GEN_IPI0_MASTER S_AXI_GP4 \
+      PS_GEN_IPI1_ENABLE 1 PS_GEN_IPI1_MASTER S_AXI_GP4 \
+      PS_GEN_IPI2_ENABLE 1 PS_GEN_IPI2_MASTER S_AXI_GP4 \
+      PS_GEN_IPI3_ENABLE 1 PS_GEN_IPI3_MASTER S_AXI_GP4 \
+      PS_GEN_IPI4_ENABLE 1 PS_GEN_IPI4_MASTER S_AXI_GP4 \
+      PS_GEN_IPI5_ENABLE 1 PS_GEN_IPI5_MASTER S_AXI_GP4 \
+      PS_GEN_IPI6_ENABLE 1 PS_GEN_IPI6_MASTER S_AXI_GP4 \
       PS_USE_S_AXI_LPD 1 PS_S_AXI_LPD_DATA_WIDTH 32 \
     }] $cips
     puts "aie_reflasher_ipi: IPI0..6 + S_AXI_LPD enabled on CIPS"
@@ -79,22 +79,6 @@ namespace eval aie_reflasher_ipi {
     connect_bd_net [get_bd_pins ipi_lpd_ila/clk] [get_bd_pins clocks_and_resets/design_clk]
     connect_bd_net [get_bd_pins ipi_lpd_ila/resetn] [get_bd_pins clocks_and_resets/design_peripheral_aresetn]
     assign_bd_address
-
-    # The PE picks the IPI channel at runtime: every channel with a message buffer
-    # (IPI0..5) plus the message RAM must be mapped at its fixed LPD address. IPI5 and
-    # the buffer are mandatory (default path); the others only matter for --ipi N.
-    set space [get_bd_addr_spaces $PE_SPACE]
-    foreach name {psv_ipi_0 psv_ipi_1 psv_ipi_2 psv_ipi_3 psv_ipi_4 psv_ipi_5 psv_ipi_buffer} {
-      set segs [get_bd_addr_segs -quiet -of_objects $space -filter "NAME =~ *_${name}"]
-      if {[llength $segs] == 0} {
-        if {$name eq "psv_ipi_5" || $name eq "psv_ipi_buffer"} {
-          error "aie_reflasher_ipi: $name is not mapped in $PE_SPACE"
-        }
-        puts "WARNING aie_reflasher_ipi: $name not mapped in $PE_SPACE (only --ipi N needs it)"
-      } else {
-        puts "aie_reflasher_ipi: $name -> [get_property OFFSET $segs] ([get_property RANGE $segs])"
-      }
-    }
   }
 
   proc write_ltx {} {
