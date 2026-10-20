@@ -38,7 +38,7 @@ output, so a successful reflash is visible from the host.
 | `Makefile` | every build step (see below); no CMake |
 | `sus/aie_pdi_loader.sus` | the `AIEPdiLoader` PE and its reusable core `pmc_pdi_loader` |
 | `sus/tb/` | SystemVerilog testbench with a behavioural model of the IPI block and the PLM (Verilator or xsim) |
-| `tapasco/aie_reflasher_ipi.tcl` | Tapasco vck5000 plugin: enables IPI0..6 and `S_AXI_LPD` on the CIPS and wires the PE to it |
+| `tapasco/aie_reflasher_plugin.tcl` | Tapasco vck5000 plugin: enables IPI0..6 and `S_AXI_LPD` on the CIPS and wires the PE to it |
 | `tapasco/pack_pdi_loader_kernel.tcl` | Vivado IP packaging of the PE (register map) |
 | `tapasco/pdi-loader.json` | Tapasco job file (`@ADF@` is filled in by `make jobfile`) (`DataStreamerVN` + `AIEPdiLoader` + AI-Engine + DMA-Streaming) |
 | `host/reflash_aie_loader.cpp` | host tool that performs a reflash |
@@ -86,10 +86,10 @@ make import       # tapasco import build/AIEPdiLoader.zip as 10203 -p vck5000
 ### 3. Install the platform plugin
 
 ```
-make plugin       # copies tapasco/aie_reflasher_ipi.tcl to $TAPASCO_HOME_TOOLFLOW/vivado/platform/vck5000/plugins/
+make plugin       # copies tapasco/aie_reflasher_plugin.tcl to $TAPASCO_HOME_TOOLFLOW/vivado/platform/vck5000/plugins/
 ```
 
-The plugin is activated by the `aie_reflasher_ipi` feature in the job file. It
+The plugin is activated by the `aie_reflasher_plugin` feature in the job file. It
 
 - enables IPI0..IPI6 on the CIPS. All of them are required: the per-design 2023.1 PLM only
   scans as many IPI interrupt bits as there are IPI instances in the design, so with fewer

@@ -10,5 +10,5 @@ export LM_LICENSE_FILE=27000@kiso.uni-paderborn.de
 export TAPASCO_PLATFORM=pcie
 export PLATFORM_FILE=/opt/software/FPGA/Xilinx/Vitis/2023.1/base_platforms/xilinx_vck190_base_202310_1/xilinx_vck190_base_202310_1.xpfm
 
-# source ~/mitarbeiter/tapasco-workdir/tapasco-setup.sh
-source /tmp/tapasco_workdir/tapasco-setup.sh
+source ~/mitarbeiter/tapasco-workdir/tapasco-setup.sh
+# source /tmp/tapasco_workdir/tapasco-setup.sh

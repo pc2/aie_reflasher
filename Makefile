@@ -5,7 +5,7 @@
 #   make sim-xsim    same testbench in Vivado xsim
 #   make package     Vivado IP packaging -> build/AIEPdiLoader.zip
 #   make import      tapasco import of that zip (ID $(PE_ID))
-#   make plugin      copy tapasco/aie_reflasher_ipi.tcl into the Tapasco vck5000 plugin dir
+#   make link_plugin symlink tapasco/aie_reflasher_plugin.tcl into the Tapasco vck5000 plugin dir
 #   make jobfile     build/pdi-loader.json with ADF=$(ADF) substituted
 #   make bitstream   tapasco --jobsFile build/pdi-loader.json
 #   make pdi         aie/libadf_{a,b}.pdi: AIE-only partial PDIs from the libadf archives
@@ -60,7 +60,7 @@ CXXFLAGS ?= -std=gnu++20 -O2 -Wall
 TAPASCO_CXXFLAGS := -isystem $(TAPASCO_PREFIX)/include/tapasco
 TAPASCO_LDLIBS   := $(TAPASCO_LIB) -lpthread -ldl -lm -lrt -lutil
 
-.PHONY: all codegen sim sim-xsim package import plugin jobfile bitstream pdi check-pdi host clean
+.PHONY: all codegen sim sim-xsim package import link_plugin jobfile bitstream pdi check-pdi host clean
 
 all: codegen host
 
@@ -89,14 +89,12 @@ $(BUILD)/AIEPdiLoader.zip: $(CODEGEN) tapasco/pack_pdi_loader_kernel.tcl
 	cd $(BUILD)/pack_prj && vivado -mode batch -source $(abspath tapasco/pack_pdi_loader_kernel.tcl) -tclargs $(PART) $(abspath $(CODEGEN))
 	rm -f $@
 	cd $(BUILD)/pack_prj/AIEPdiLoader_ip && zip -qr $(abspath $@) .
+	tapasco import $(BUILD)/AIEPdiLoader.zip as $(PE_ID) -p vck5000
 
-import: $(BUILD)/AIEPdiLoader.zip
-	tapasco import $< as $(PE_ID) -p vck5000
-
-plugin: tapasco/aie_reflasher_ipi.tcl
+link_plugin: tapasco/aie_reflasher_plugin.tcl
 	@test -d "$(TAPASCO_PLUGIN_DIR)" || { echo "TAPASCO_PLUGIN_DIR=$(TAPASCO_PLUGIN_DIR) does not exist (source tapasco-setup.sh?)"; exit 1; }
-	cp $< $(TAPASCO_PLUGIN_DIR)/
-	@echo "installed $< -> $(TAPASCO_PLUGIN_DIR)/"
+	ln -sfn $(abspath $<) $(TAPASCO_PLUGIN_DIR)/$(notdir $<)
+	@echo "linked $(TAPASCO_PLUGIN_DIR)/$(notdir $<) -> $(abspath $<)"
 
 jobfile: $(BUILD)/pdi-loader.json
 
@@ -106,7 +104,7 @@ $(BUILD)/pdi-loader.json: tapasco/pdi-loader.json
 	sed 's,@ADF@,$(ADF),' $< > $@
 	@echo "wrote $@ (adf = $(ADF))"
 
-bitstream: $(BUILD)/pdi-loader.json
+bitstream: $(BUILD)/pdi-loader.json $(BUILD)/AIEPdiLoader.zip
 	tapasco --jobsFile $<
 
 # ---------------------------------------------------------------- partial PDIs

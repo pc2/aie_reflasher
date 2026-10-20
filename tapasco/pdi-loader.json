@@ -32,7 +32,7 @@
       }
   },
   {
-    "Feature": "aie_reflasher_ipi",
+    "Feature": "aie_reflasher_plugin",
     "Properties": { "ila": "false" }
   } ]
 } ]

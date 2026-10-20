@@ -7,7 +7,7 @@
 // --ipi N selects the IPI channel (0..5). Default 2: nothing else in a Tapasco design uses
 // IPI0..4 (no A72/R5 software), whereas IPI5 is xsdb's channel and would collide with a
 // JTAG session. IPI2 and IPI5 were both verified on hardware on 2026-10-20. The design must
-// map every channel's register block to the PE (plugin aie_reflasher_ipi checks IPI0..5).
+// map every channel's register block to the PE (plugin aie_reflasher_plugin checks IPI0..5).
 //
 // Return value: [31:0] PLMI status (0 = success) or 0xFFFFFF00|err for PE-local errors
 // (1 write resp, 2 read resp, 3 timeout, 4 PLM status != 0, 5 PMC still busy with an
