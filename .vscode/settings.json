@@ -1,0 +1,11 @@
+{
+    // SUS language server (VS Code extension "sus-lsp"): the same file set the Makefile
+    // passes to sus_compiler, so the LSP resolves the library modules from the submodules.
+    "sus_lsp.args": [
+        "sus-xrt/axi_stream.sus",
+        "sus-xrt/axi_lite.sus",
+        "sus-xrt/axi_memory.sus",
+        "sus-tapasco/sus/tapasco_ctrl_slave.sus",
+        "sus/aie_pdi_loader.sus"
+    ]
+}
