@@ -103,7 +103,7 @@ def main(argv):
         ok = (p['ident'] == 'IDPP' and p['n_img'] == 1 and p['n_prt'] == 1 and p['images'][0]['name'] == 'aie_image'
               and p['images'][0]['img_id'] == 0x1c000000 and target['type'] == 'CDO')
         print(f"  partial-PDI shape (ident IDPP, one aie_image 0x1c000000, one CDO partition): {'OK' if ok else 'UNEXPECTED'}")
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'cdo-tools'))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import cdo_parser
     def norm(cmds):
         out = []

@@ -1,7 +1,19 @@
-#include <iostream>
+// Vector-norm check for the DataStreamerVN + AIE design (tapasco-examples/Vector-Norm/sw/C++,
+// Boost dependency removed). Streams (x, y) pairs through the PL PE into the AIE graph and
+// checks z = sqrt(x^2 + y^2). With aie/libadf_b.pdi loaded every result is doubled, so this
+// tool is how a reflash is verified: it passes with design A and reports every index wrong
+// by a factor of 2 with design B.
+//
+//   vector-norm [--samples N]        (N a multiple of 1024, default 16384)
+//   vector-norm --expect-scale 2     (accept outputs scaled by this factor, i.e. design B)
 
-#include <boost/program_options.hpp>
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#include <vector>
+
 #include <tapasco.hpp>
 
 #define DEFAULT_SAMPLES 16384
@@ -9,15 +21,14 @@
 
 int main(int argc, char **argv) {
 
-        boost::program_options::options_description desc;
-        desc.add_options()
-                ("samples", boost::program_options::value<std::size_t>()->default_value(DEFAULT_SAMPLES), "number of total samples");
-
-        boost::program_options::variables_map vm;
-        boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc), vm);
-        boost::program_options::notify(vm);
-
-        size_t num_samples = vm["samples"].as<std::size_t>();
+        size_t num_samples = DEFAULT_SAMPLES;
+        float expect_scale = 1.0f;
+        for (int i = 1; i < argc; ++i) {
+                std::string a = argv[i];
+                if (a == "--samples" && i + 1 < argc) num_samples = std::strtoull(argv[++i], nullptr, 0);
+                else if (a == "--expect-scale" && i + 1 < argc) expect_scale = std::strtof(argv[++i], nullptr);
+                else { std::cerr << "usage: vector-norm [--samples N] [--expect-scale S]" << std::endl; return 2; }
+        }
 
         if (num_samples % 1024) {
                 std::cout << "ERROR: number of samples must be multiple of 1024" << std::endl;
@@ -64,7 +75,7 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < num_samples; ++i) {
                 float x = input[i * 2];
                 float y = input[i * 2 + 1];
-                float ref = std::sqrt(x * x + y * y);
+                float ref = expect_scale * std::sqrt(x * x + y * y);
 
                 float diff = std::fabs(ref - output[i]);
                 if (diff > ref * 1e-5) {

@@ -1,11 +1,11 @@
 # AIEPdiLoader: plan for the dedicated AIE reflash PE
 
-Replaces the CDO-interpreting `AIEngineReflasher` with a PE that does one thing: hand a
+Replaces the earlier CDO-interpreting PL core (see `docs/background.md`) with a PE that does one thing: hand a
 partial PDI in card DDR to the PLM over IPI and report the PLM's verdict. The PLM does
 the AIE configuration. Written in SUS, same library modules and port names as before so
 the Tapasco side changes are small.
 
-## 1. Modules (`aie_pdi_loader.sus`, compiles with sus_compiler 0.4.0)
+## 1. Modules (`sus/aie_pdi_loader.sus`, compiles with sus_compiler 0.4.0)
 
 ### `pmc_pdi_loader #(ADDR_WIDTH, TIMEOUT_CYCLES)` (reusable core)
 
@@ -57,21 +57,23 @@ the Tapasco side changes are small.
 
 ## 2. Build and package
 
+All from the repository root (see the README):
+
 ```
-cd pmc_reflasher/sus && make codegen        # sus_compiler -> build/aie_pdi_loader.sv (+ tb stub)
-make package PART=xcvc1902-vsvd1760-2MP-e-S # Vivado ipx package -> build/AIEPdiLoader.zip
-tapasco import build/AIEPdiLoader.zip as 8848 -p vck5000
+make codegen    # sus_compiler -> build/aie_pdi_loader.sv (+ tb stub)
+make package    # Vivado ipx package -> build/AIEPdiLoader.zip
+make import     # tapasco import build/AIEPdiLoader.zip as 10203 -p vck5000
 ```
 
-`pack_pdi_loader_kernel.tcl` is `pack_reflash_kernel.tcl` with the register map
-`CTRL 0x00`, `PDI_ADDRESS 0x20 (64)`, `AXI_CONFIG 0x30 (64)` and `small_axil` as the only
+`tapasco/pack_pdi_loader_kernel.tcl` defines the register map `CTRL 0x00`,
+`PDI_ADDRESS 0x20 (64)`, `IPI_CONFIG 0x30 (64)` and `ipi_lpd_interface` as the only
 associated bus interface.
 
 ## 3. Tapasco platform changes (plugin)
 
 The PE now has a single AXI4-Lite master and it must reach the LPD directly:
 
-1. Keep `enable_ipi5` (IPI5 segment) and the `S_AXI_LPD` enable from `enable_ipi5.tcl`.
+1. Enable IPI0..6 and `S_AXI_LPD` on the CIPS (`tapasco/aie_reflasher_ipi.tcl`).
 2. Replace the "join bulk and small" step: there is no bulk port, so connect
    `target_ip/small_axil` through a SmartConnect straight to `/host/versal_cips_0/S_AXI_LPD`
    (AXI4-Lite -> AXI4 conversion is done by the SmartConnect; clock = design clock on
@@ -85,10 +87,9 @@ The PE now has a single AXI4-Lite master and it must reach the LPD directly:
 ## 4. Host tool
 
 `host/reflash_aie_loader.cpp`: DMA the partial PDI into DDR with Tapasco, launch the PE with
-`(0x100_0000_0000 + offset, axprot_word)`, decode the 64-bit return value. Same CLI as
-`reflash-aie-pe`.
+`(0x100_0000_0000 + offset, ipi_config)`, decode the 64-bit return value.
 
-## 5. Verification before hardware (done here with Verilator 5.052: `make sim-verilator`)
+## 5. Verification before hardware (done here with Verilator 5.052: `make sim`)
 
 Result on 2026-10-19: `happy` (PLMI status 0), `plm_err` (status 0x1234 propagated) and
 `decerr` (unreachable LPD -> 0xFFFFFF01) all pass; the traced transaction sequence is
@@ -98,12 +99,12 @@ and `;` is not a statement separator in SUS.
 
 
 1. `make codegen` also emits the SUS testbench stub (`build/AIEPdiLoader_tb.sv`).
-2. `tb/fake_plm_axil.sv` is an AXI4-Lite slave model of the IPI block: a small RAM for the
+2. `sus/tb/fake_plm_axil.sv` is an AXI4-Lite slave model of the IPI block: a small RAM for the
    message buffers, a TRIG register that sets the OBS bit, and a "PLM" process that, some
    cycles after TRIG, writes a programmable status into the response buffer and clears OBS.
    It also returns DECERR for addresses outside the IPI block so the readback step can be
    exercised.
-3. `tb/sim.tcl` runs xsim: start the PE through `s_axi_control` (write reg 0 and reg 1,
+3. `sus/tb/sim.tcl` runs xsim (`make sim-xsim`): start the PE through `s_axi_control` (write reg 0 and reg 1,
    then CTRL bit 0), wait for `intr`, read the result register and check:
    - happy path: result `[0:32] == 0`;
    - PLM error: fake status `0x1234` -> result `[0:32] == 0x1234`;
@@ -114,8 +115,8 @@ and `;` is not a statement separator in SUS.
 
 1. Build the Tapasco design with the new PE and the plugin changes; verify the address map.
 2. Load it; run `vector-norm` for the baseline.
-3. `reflash-aie-loader libadf_a.pdi` (reload of the running design, must return 0).
-4. `reflash-aie-loader libadf_b.pdi`, `vector-norm` again: doubled outputs.
+3. `reflash-aie-loader aie/libadf_a.pdi` (reload of the running design, must return 0).
+4. `reflash-aie-loader aie/libadf_b.pdi`, `vector-norm` again: doubled outputs.
 5. Time it: the PE return already includes the whole PLM load, so Tapasco's job runtime is
    the reflash latency.
 

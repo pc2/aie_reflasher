@@ -13,7 +13,7 @@
 # port in the "post-platform" hook (after Tapasco's own construct_address_map) and then
 # calling assign_bd_address lets Vivado place them all at their fixed addresses.
 #
-# Enable with  { "Feature": "aie_reflasher_ipi", "Properties": {} }.
+# Enable with  { "Feature": "aie_reflasher_ipi", "Properties": { "ila": "false" } }.
 
 namespace eval aie_reflasher_ipi {
 
@@ -62,20 +62,27 @@ namespace eval aie_reflasher_ipi {
     set cips      [get_bd_cells /host/versal_cips_0]
     connect_bd_net [get_bd_pins $cips/s_axi_lpd_aclk] [get_bd_pins clocks_and_resets/design_clk]
 
-    # Also add an ILA
-    create_bd_cell -type ip -vlnv xilinx.com:ip:axis_ila:1.2 ipi_lpd_ila
-    set_property -dict [list \
-      CONFIG.C_DATA_DEPTH {32768} \
-      CONFIG.C_MON_TYPE {Interface_Monitor} \
-    ] [get_bd_cells ipi_lpd_ila]
-    connect_bd_intf_net [get_bd_intf_pins ipi_lpd_ila/SLOT_0_AXI] -boundary_type upper [get_bd_intf_pins arch/ipi_lpd_interface]
-    connect_bd_net [get_bd_pins ipi_lpd_ila/clk] [get_bd_pins clocks_and_resets/design_clk]
-    connect_bd_net [get_bd_pins ipi_lpd_ila/resetn] [get_bd_pins clocks_and_resets/design_peripheral_aresetn]
+    # Optional AXI ILA on the LPD port (Properties {"ila": "true"}); the probe file is written
+    # next to the bitstream by write_ltx.
+    if {[tapasco::get_feature_option "aie_reflasher_ipi" "ila" "false"] == "true"} {
+      create_bd_cell -type ip -vlnv xilinx.com:ip:axis_ila:1.2 ipi_lpd_ila
+      set_property -dict [list \
+        CONFIG.C_DATA_DEPTH {32768} \
+        CONFIG.C_MON_TYPE {Interface_Monitor} \
+      ] [get_bd_cells ipi_lpd_ila]
+      connect_bd_intf_net [get_bd_intf_pins ipi_lpd_ila/SLOT_0_AXI] -boundary_type upper [get_bd_intf_pins arch/ipi_lpd_interface]
+      connect_bd_net [get_bd_pins ipi_lpd_ila/clk] [get_bd_pins clocks_and_resets/design_clk]
+      connect_bd_net [get_bd_pins ipi_lpd_ila/resetn] [get_bd_pins clocks_and_resets/design_peripheral_aresetn]
+      puts "aie_reflasher_ipi: ILA on ipi_lpd_interface added"
+    }
     assign_bd_address
   }
 
-  proc write_ltx {} {
-    write_debug_probes debug_probes.ltx
+  proc write_ltx {args} {
+    if {[tapasco::get_feature_option "aie_reflasher_ipi" "ila" "false"] == "true"} {
+      write_debug_probes debug_probes.ltx
+    }
+    return $args
   }
 }
 

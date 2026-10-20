@@ -6,4 +6,4 @@
 	url = https://github.com/pc2/sus-xrt.git
 [submodule "sus-tapasco"]
 	path = sus-tapasco
-	url = git@github.com:sus-hdl/sus-tapasco.git
+	url = https://github.com/sus-hdl/sus-tapasco.git
