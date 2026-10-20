@@ -78,5 +78,6 @@ bif=$work/aie_partial.bif
     echo "}"
 } > "$bif"
 
-bootgen -arch versal -image "$bif" -w -o "$out" -log error
+# run inside the temp dir: bootgen drops bootgen_log.txt into the cwd
+(cd "$work" && bootgen -arch versal -image "$bif" -w -o "$out" -log error)
 echo "wrote $out ($(stat -c %s "$out") bytes)"

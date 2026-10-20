@@ -26,29 +26,36 @@ USAGE
     hand-picked lines from ai_engine_data.cdo) before doing any real work,
     and aborts loudly if that self-test fails.
 """
-from __future__ import annotations
-
 import struct
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Optional, Set, Tuple
+
+# Kept compatible with Python 3.6 (the system python on the pc2 FPGA nodes): no dataclasses,
+# no `from __future__ import annotations`, typing generics instead of the builtin list[...] forms.
 
 # ---------------------------------------------------------------------------
 # Internal command representation
 # ---------------------------------------------------------------------------
 
 
-@dataclass
 class CdoCommand:
-    module: int                  # header bits [8:15]
-    opcode: int                  # header bits [0:7]
-    mnemonic: str                # resolved name, or "unknown_M<m>_OP<op>"
-    args: dict                   # decoded, named fields (opcode-specific)
-    raw_payload: tuple           # raw payload words, always kept for fallback/debug
-    long_form: bool              # True if the 0xFF escape (32-bit length word) was used
-    source: str = "binary"       # "binary" or "text", for provenance when cross-checking
-    word_offset: int = -1        # word index of the header word in its source stream (-1 if n/a, e.g. text-parsed)
+    def __init__(self, module: int, opcode: int, mnemonic: str, args: dict, raw_payload: tuple,
+                 long_form: bool, source: str = "binary", word_offset: int = -1):
+        self.module = module              # header bits [8:15]
+        self.opcode = opcode              # header bits [0:7]
+        self.mnemonic = mnemonic          # resolved name, or "unknown_M<m>_OP<op>"
+        self.args = args                  # decoded, named fields (opcode-specific)
+        self.raw_payload = raw_payload    # raw payload words, always kept for fallback/debug
+        self.long_form = long_form        # True if the 0xFF escape (32-bit length word) was used
+        self.source = source              # "binary" or "text", for provenance when cross-checking
+        self.word_offset = word_offset    # word index of the header word in its source stream (-1 if n/a)
+
+    def __eq__(self, other):
+        return isinstance(other, CdoCommand) and self.__dict__ == other.__dict__
+
+    def __repr__(self):
+        return f"CdoCommand({self.__dict__!r})"
 
     def text(self) -> str:
         """Render in the same style as the real bootgen .cdo text files."""
@@ -90,7 +97,7 @@ def _fmt_arg(v) -> str:
 #
 # Each entry: opcode -> (mnemonic, arg_names, decode_fn, confidence_note)
 #
-# decode_fn(payload: tuple[int,...]) -> dict   maps raw payload words to named args.
+# decode_fn(payload: Tuple[int,...]) -> dict   maps raw payload words to named args.
 # ---------------------------------------------------------------------------
 
 CONFIDENCE_CONFIRMED = "confirmed"
@@ -192,9 +199,9 @@ def _words_from_bytes(data: bytes) -> tuple:
     return struct.unpack("<%dI" % n, data[: n * 4])
 
 
-def parse_binary_cdo(data: bytes) -> list[CdoCommand]:
+def parse_binary_cdo(data: bytes) -> List[CdoCommand]:
     words = _words_from_bytes(data)
-    commands: list[CdoCommand] = []
+    commands: List[CdoCommand] = []
 
     i = 0
     header_info = {}
@@ -284,8 +291,8 @@ _TEXT_IGNORE_PREFIXES = (
 )
 
 
-def parse_text_cdo(text: str) -> list[CdoCommand]:
-    commands: list[CdoCommand] = []
+def parse_text_cdo(text: str) -> List[CdoCommand]:
+    commands: List[CdoCommand] = []
     for lineno, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith(_TEXT_IGNORE_PREFIXES):
@@ -334,7 +341,7 @@ def parse_text_cdo(text: str) -> list[CdoCommand]:
 # ---------------------------------------------------------------------------
 
 
-def emit_text_cdo(commands: list[CdoCommand]) -> str:
+def emit_text_cdo(commands: List[CdoCommand]) -> str:
     lines = [cmd.text() for cmd in commands]
     return "\n".join(lines) + "\n"
 
@@ -355,7 +362,7 @@ REFERENCE_TEXT_LINES = [
 ]
 
 
-def _encode_short_form(module: int, opcode: int, payload: list[int]) -> list[int]:
+def _encode_short_form(module: int, opcode: int, payload: List[int]) -> List[int]:
     assert len(payload) < 0xFF, "self-test only needs short-form commands"
     hdr = (opcode & 0xFF) | ((module & 0xFF) << 8) | ((len(payload) & 0xFF) << 16)
     return [hdr] + payload
@@ -365,7 +372,7 @@ def self_test() -> None:
     text_cmds = parse_text_cdo("\n".join(REFERENCE_TEXT_LINES))
     assert len(text_cmds) == len(REFERENCE_TEXT_LINES), "text parser dropped a line"
 
-    words: list[int] = []
+    words: List[int] = []
     for cmd in text_cmds:
         words.extend(_encode_short_form(1, cmd.opcode, list(cmd.raw_payload)))
 
@@ -407,7 +414,7 @@ def process_file(path: Path) -> None:
     out_path = path.with_suffix(path.suffix + ".decoded.cdo")
     out_path.write_text(emit_text_cdo(commands))
 
-    counts: dict[str, int] = {}
+    counts: Dict[str, int] = {}
     num_landing_in_0x200 = 0
     num_landing_in_0xf70 = 0
     num_landing_elsewhere = 0
@@ -431,7 +438,7 @@ def process_file(path: Path) -> None:
     return commands
 
 
-def main(argv: list[str]) -> int:
+def main(argv: List[str]) -> int:
     self_test()
     if not argv:
         print(__doc__)

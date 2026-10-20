@@ -129,8 +129,11 @@ make bitstream                         # tapasco --jobsFile build/pdi-loader.jso
 ```
 
 Tapasco composes the design under `$TAPASCO_WORK_DIR/compose/axi4mm/vck5000/`; the target
-copies the resulting PDI to `build/bitstream.pdi`, plus `build/debug_probes.ltx` when the
-plugin's ILA was enabled. Load it with `tapasco-load-bitstream build/bitstream.pdi`.
+copies the resulting PDI to `build/reconfigurable_bitstream.pdi`, plus `build/debug_probes.ltx`
+when the plugin's ILA was enabled. Load it with
+`tapasco-load-bitstream build/reconfigurable_bitstream.pdi`. The IP zips and the job file are
+order-only prerequisites: a missing bitstream is built, but changing them later does not
+restart the multi-hour build on its own (`make -B bitstream` does).
 
 ### 6. Build the partial PDIs
 
@@ -142,7 +145,7 @@ make check-pdi    # structure and IDCODE check
 `tools/make_aie_pdi.sh` extracts the six `aie.cdo.*.bin` sections from the archive and wraps
 them into a partial PDI with one `aie_image` (id `0x1c000000`), the same image Tapasco appends
 to the boot PDI. The IDCODE in its header must match the silicon or the PLM refuses the
-image, so it is copied from `build/bitstream.pdi`, the full PDI from the previous step. The
+image, so it is copied from `build/reconfigurable_bitstream.pdi`, the full PDI from the previous step. The
 partial PDIs depend on it, so `make pdi` runs the bitstream build first if that file is
 missing.
 

@@ -9,9 +9,9 @@
 #   make aie         aie/libadf_a.a and aie/libadf_b.a (-DDOUBLE_OUTPUT) from aie/src with aiecompiler
 #   make jobfile     build/pdi-loader.json with ADF=$(ADF) substituted (builds the archive if needed)
 #   make bitstream   tapasco --jobsFile build/pdi-loader.json; copies the PDI (and debug_probes.ltx
-#                    if the plugin's ILA was enabled) to build/bitstream.pdi, build/debug_probes.ltx
+#                    if the plugin's ILA was enabled) to build/reconfigurable_bitstream.pdi, build/debug_probes.ltx
 #   make pdi         aie/libadf_{a,b}.pdi: AIE-only partial PDIs from the libadf archives, stamped with
-#                    the IDCODE of build/bitstream.pdi
+#                    the IDCODE of build/reconfigurable_bitstream.pdi
 #   make check-pdi   structural check of the partial PDIs
 #   make host        build/reflash-aie-loader and build/vector-norm
 #   make all         codegen + host (everything that needs neither Vivado nor Vitis)
@@ -52,7 +52,7 @@ ADF ?= aie/libadf_a.a
 # partial PDIs copy their IDCODE from that copy: the PLM rejects a PDI whose IDCODE differs
 # from the silicon, and a PDI that boots on the card is the authoritative source for it.
 COMPOSE_DIR := $(TAPASCO_WORK_DIR)/compose/axi4mm/vck5000/DataStreamerVN__AIEPdiLoader/001_001/312.5+AI-Engine+DMA-Streaming+aie_reflasher_plugin
-BITSTREAM   := $(BUILD)/bitstream.pdi
+BITSTREAM   := $(BUILD)/reconfigurable_bitstream.pdi
 
 SUS_LIB      := sus-xrt/axi_stream.sus sus-xrt/axi_lite.sus sus-xrt/axi_memory.sus sus-tapasco/sus/tapasco_ctrl_slave.sus
 SUS_FILES    := $(SUS_LIB) sus/aie_pdi_loader.sus
@@ -131,8 +131,10 @@ $(BUILD)/pdi-loader.json: tapasco/pdi-loader.json $(ADF)
 
 bitstream: $(BITSTREAM)
 
-$(BITSTREAM): $(BUILD)/pdi-loader.json $(BUILD)/AIEPdiLoader.zip $(BUILD)/DataStreamerVN.zip
-	tapasco --jobsFile $<
+# Order-only prerequisites (after the |): they are built when missing, but a newer job file
+# or IP zip does not by itself restart the multi-hour Tapasco build. `make -B bitstream` forces it.
+$(BITSTREAM): | $(BUILD)/pdi-loader.json $(BUILD)/AIEPdiLoader.zip $(BUILD)/DataStreamerVN.zip
+	tapasco --jobsFile $(BUILD)/pdi-loader.json
 	cp "$$(ls -t $(COMPOSE_DIR)/*.pdi | head -1)" $(BITSTREAM)
 	-cp $(COMPOSE_DIR)/debug_probes.ltx $(BUILD)/ 2>/dev/null
 	@echo "bitstream: $(BITSTREAM)$$(test -f $(BUILD)/debug_probes.ltx && echo ', probes: $(BUILD)/debug_probes.ltx')"
@@ -162,7 +164,7 @@ aie/libadf_b.a: $(AIE_SRC)
 pdi: aie/libadf_a.pdi aie/libadf_b.pdi
 
 # A partial PDI depends on its archive and on the full bitstream (for the IDCODE): a missing
-# archive runs aiecompiler, a missing build/bitstream.pdi runs the Tapasco build.
+# archive runs aiecompiler, a missing build/reconfigurable_bitstream.pdi runs the Tapasco build.
 aie/%.pdi: aie/%.a $(BITSTREAM) tools/make_aie_pdi.sh
 	tools/make_aie_pdi.sh $< $@ --like $(abspath $(BITSTREAM))
 
