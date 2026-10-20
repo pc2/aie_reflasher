@@ -138,13 +138,19 @@ $(BITSTREAM): $(BUILD)/pdi-loader.json $(BUILD)/AIEPdiLoader.zip $(BUILD)/DataSt
 # The archives are checked in, so `make aie` is an explicit rebuild, never triggered by `pdi`.
 aie: aie-a aie-b
 
-aie-a: AIE_DEFINES :=
-aie-b: AIE_DEFINES := -Xpreproc=-DDOUBLE_OUTPUT
-aie-%:
+# $(1) = variant letter, $(2) = extra aiecompiler flags. Explicit rules, not a pattern rule:
+# make never applies pattern rules to .PHONY targets.
+define AIE_BUILD
 	@test -n "$(XILINX_VITIS)" -a -n "$(PLATFORM_FILE)" || { echo "set XILINX_VITIS and PLATFORM_FILE (VCK5000 .xpfm) for aiecompiler"; exit 1; }
-	rm -rf $(BUILD)/aie_$* && mkdir -p $(BUILD)/aie_$*
-	cd $(BUILD)/aie_$* && $(AIECC) $(AIE_FLAGS) $(AIE_DEFINES) -workdir=work $(abspath aie/src/graph.cpp)
-	cp $(BUILD)/aie_$*/libadf.a aie/libadf_$*.a
+	rm -rf $(BUILD)/aie_$(1) && mkdir -p $(BUILD)/aie_$(1)
+	cd $(BUILD)/aie_$(1) && $(AIECC) $(AIE_FLAGS) $(2) -workdir=work $(abspath aie/src/graph.cpp)
+	cp $(BUILD)/aie_$(1)/libadf.a aie/libadf_$(1).a
+endef
+
+aie-a:
+	$(call AIE_BUILD,a,)
+aie-b:
+	$(call AIE_BUILD,b,-Xpreproc=-DDOUBLE_OUTPUT)
 
 # ---------------------------------------------------------------- partial PDIs
 pdi: aie/libadf_a.pdi aie/libadf_b.pdi
