@@ -43,8 +43,18 @@ namespace eval aie_reflasher_ipi {
     set cips      [get_bd_cells /host/versal_cips_0]
     set reflasher [get_bd_cells /arch/target_ip_01_000/internal_target_ip_01_000]
 
+    # ALL IPI channels must exist in the design: the per-design 2023.1 PLM sizes its IPI
+    # handling by XPAR_XIPIPSU_NUM_TARGETS (= IPI instances present) and its interrupt
+    # handler only scans ISR bits 0..NUM_TARGETS-1. With IPI0-4 absent that is 0..3 and
+    # IPI5 (bit 7) is masked and dropped silently (breaks xsdb plm commands too).
     set_property -dict [list CONFIG.PS_PMC_CONFIG { \
+      PS_GEN_IPI0_ENABLE 1 PS_GEN_IPI0_MASTER A72 \
+      PS_GEN_IPI1_ENABLE 1 PS_GEN_IPI1_MASTER A72 \
+      PS_GEN_IPI2_ENABLE 1 PS_GEN_IPI2_MASTER A72 \
+      PS_GEN_IPI3_ENABLE 1 PS_GEN_IPI3_MASTER A72 \
+      PS_GEN_IPI4_ENABLE 1 PS_GEN_IPI4_MASTER A72 \
       PS_GEN_IPI5_ENABLE 1 PS_GEN_IPI5_MASTER A72 \
+      PS_GEN_IPI6_ENABLE 1 PS_GEN_IPI6_MASTER A72 \
       PS_USE_S_AXI_LPD 1 PS_S_AXI_LPD_DATA_WIDTH 32 \
     }] $cips
     puts "aie_reflasher_ipi: IPI5 + S_AXI_LPD enabled on CIPS"

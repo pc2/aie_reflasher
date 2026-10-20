@@ -21,7 +21,7 @@ module AIEPdiLoader_tb;
     logic [3:0] m_arcache; logic [2:0] m_arprot; logic [3:0] m_arqos, m_arregion; logic m_arvalid, m_arready;
     logic [31:0] m_rdata; logic [1:0] m_rresp; logic m_rlast, m_rvalid, m_rready;
     // knobs
-    logic [31:0] plm_status = 0, plm_loader_status = 0; logic plm_never_ack = 0; logic decerr_all = 0;
+    logic [31:0] plm_status = 0, plm_loader_status = 0; logic plm_never_ack = 0; logic decerr_all = 0; logic obs_preset = 0;
 
     AIEPdiLoader dut(
         .aclk(aclk), .aresetn(aresetn),
@@ -53,7 +53,7 @@ module AIEPdiLoader_tb;
         .bresp(m_bresp), .bvalid(m_bvalid), .bready(m_bready),
         .araddr(m_araddr), .arlen(m_arlen), .arsize(m_arsize), .arburst(m_arburst), .arvalid(m_arvalid), .arready(m_arready),
         .rdata(m_rdata), .rresp(m_rresp), .rlast(m_rlast), .rvalid(m_rvalid), .rready(m_rready),
-        .plm_status(plm_status), .plm_loader_status(plm_loader_status), .plm_never_ack(plm_never_ack), .decerr_all(decerr_all)
+        .plm_status(plm_status), .plm_loader_status(plm_loader_status), .plm_never_ack(plm_never_ack), .decerr_all(decerr_all), .obs_preset(obs_preset)
     );
 
     task ctrl_write(input [11:0] addr, input [63:0] data);
@@ -68,11 +68,11 @@ module AIEPdiLoader_tb;
         wait (s_rvalid); data = s_rdata; @(posedge aclk); s_rready <= 0;
     endtask
 
-    task run_case(input string name, input [31:0] st, input never, input decerr, input [63:0] expect_lo);
+    task run_case(input string name, input [31:0] st, input never, input decerr, input busy, input [63:0] cmdw, input [63:0] expect_lo);
         logic [63:0] r;
-        plm_status = st; plm_never_ack = never; decerr_all = decerr;
+        plm_status = st; plm_never_ack = never; decerr_all = decerr; obs_preset = busy;
         ctrl_write(12'h020, 64'h0000_0100_0020_0000);  // PDI at PS 0x100_0020_0000
-        ctrl_write(12'h030, 64'h0);                     // AxPROT = 0
+        ctrl_write(12'h030, cmdw << 32);                // AxPROT = 0, command override in [63:32]
         ctrl_write(12'h000, 64'h1);                     // start
         wait (intr);
         ctrl_read(12'h010, r);                           // result register (tapasco_ctrl_slave layout)
@@ -85,9 +85,11 @@ module AIEPdiLoader_tb;
     initial begin
         s_awvalid = 0; s_wvalid = 0; s_bready = 0; s_arvalid = 0; s_rready = 0;
         repeat (5) @(posedge aclk); aresetn = 1; repeat (5) @(posedge aclk);
-        run_case("happy",   32'h0,    0, 0, 64'h0);
-        run_case("plm_err", 32'h1234, 0, 0, 64'h1234);
-        run_case("decerr",  32'h0,    0, 1, 64'hFFFFFF01);
+        run_case("happy",   32'h0,    0, 0, 0, 64'h0,      64'h0);
+        run_case("plm_err", 32'h1234, 0, 0, 0, 64'h0,      64'h1234);
+        run_case("decerr",  32'h0,    0, 1, 0, 64'h0,      64'hFFFFFF01);
+        run_case("busy",    32'h0,    0, 0, 1, 64'h0,      64'hFFFFFF05);
+        run_case("ping",    32'h0,    0, 0, 0, 64'h010100, 64'h0);
         // timeout case needs a TB build with a small TIMEOUT_CYCLES (edit gen int in the .sus)
         $finish;
     end

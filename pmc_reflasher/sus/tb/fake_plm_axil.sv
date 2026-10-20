@@ -47,7 +47,8 @@ module fake_plm_axil #(
     input  logic [31:0] plm_status,
     input  logic [31:0] plm_loader_status,
     input  logic        plm_never_ack,
-    input  logic        decerr_all      // 1: answer DECERR to everything (unreachable LPD)
+    input  logic        decerr_all,     // 1: answer DECERR to everything (unreachable LPD)
+    input  logic        obs_preset      // 1: OBS PMC bit stuck high (stale request)
 );
     localparam logic [31:0] IPI_BASE = 32'hFF330000 + IPI_CHANNEL * 32'h10000;
     localparam logic [31:0] MSG_RAM  = 32'hFF3F0000;
@@ -127,7 +128,7 @@ module fake_plm_axil #(
                          in_ram(araddr) ? "ram" : (araddr == IPI_BASE+4 ? "OBS" : "DECERR"));
                 if (decerr_all)                begin rdata <= 32'hDEADDEAD; rresp <= 2'b11; end
                 else if (in_ram(araddr))       begin rdata <= ram[(araddr - MSG_RAM) >> 2]; rresp <= 2'b00; end
-                else if (araddr == IPI_BASE+4) begin rdata <= {30'b0, obs_pmc, 1'b0};      rresp <= 2'b00; end
+                else if (araddr == IPI_BASE+4) begin rdata <= {30'b0, obs_pmc | obs_preset, 1'b0};      rresp <= 2'b00; end
                 else                           begin rdata <= 32'hDEADDEAD;                 rresp <= 2'b11; end
             end
         end

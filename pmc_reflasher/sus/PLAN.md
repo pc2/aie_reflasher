@@ -109,7 +109,18 @@ and `;` is not a statement separator in SUS.
 5. Time it: the PE return already includes the whole PLM load, so Tapasco's job runtime is
    the reflash latency.
 
-## 7. Open points
+## 7. Hardware bring-up log
+
+- 2026-10-20: first run timed out (PE error 3). ILA showed every bus transaction correct;
+  xsdb showed ISR bit 7 set, IMR bit 7 masked, response buffer untouched, no PLM log line,
+  and xsdb's own `plm set-log-level` (also IPI5) timing out on a fresh boot. Root cause:
+  the per-design 2023.1 PLM sizes its IPI handling by `XPAR_XIPIPSU_NUM_TARGETS` (= IPI
+  instances in the design). With only IPI5 enabled that is 4, and `XPlmi_GicAddTask` loops
+  over ISR bit indices 0..3, never reaching bit 7: the request is masked and dropped
+  silently. Fix: enable IPI0..IPI6 in the CIPS (plugin updated). Verify after rebuild with
+  `plm set-log-level 0x4` from xsdb on the DPC target: it must acknowledge now.
+
+## 8. Open points
 
 - `TIMEOUT_CYCLES = 2^28` is a guess at the PLM's worst case for a ~100 KB PDI; raise it if
   big designs (multi-MB ELFs) hit error 3 while the PLM is still working.
