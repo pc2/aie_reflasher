@@ -17,7 +17,10 @@
 #include <tapasco.hpp>
 
 #define DEFAULT_SAMPLES 16384
-#define PE_NAME "esa.informatik.tu-darmstadt.de:user:DataStreamerVN:1.0"
+// SUS DataStreamerVN (sus/data_streamer_vn.sus); the Bluespec original from tapasco-examples
+// is accepted as a fallback so the tool also runs on bitstreams built with it.
+#define PE_NAME          "pc2-sus-experiments:sus-xrt:DataStreamerVN:1.0"
+#define PE_NAME_BLUESPEC "esa.informatik.tu-darmstadt.de:user:DataStreamerVN:1.0"
 
 int main(int argc, char **argv) {
 
@@ -52,7 +55,13 @@ int main(int argc, char **argv) {
 
         // instantiate Tapasco (assume only one FPGA connected to this host)
         tapasco::Tapasco tap;
-        tapasco::PEId peId = tap.get_pe_id(PE_NAME);
+        tapasco::PEId peId;
+        try {
+                peId = tap.get_pe_id(PE_NAME);
+        } catch (...) {
+                std::cout << "PE " PE_NAME " not in this bitstream, trying " PE_NAME_BLUESPEC << std::endl;
+                peId = tap.get_pe_id(PE_NAME_BLUESPEC);
+        }
 
         // define streams
         auto inputStream = tapasco::makeInputStream(input.data(), input.size() * sizeof(float));
