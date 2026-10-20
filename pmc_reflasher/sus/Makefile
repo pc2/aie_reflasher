@@ -30,7 +30,7 @@ sim: $(BUILD)/aie_pdi_loader.sv
 sim-verilator: $(BUILD)/aie_pdi_loader.sv
 	rm -rf obj_dir && verilator --binary --timing -Wno-fatal -Wno-lint -Wno-style --top-module AIEPdiLoader_tb -j 4 \
 	    $(BUILD)/aie_pdi_loader.sv tb/fake_plm_axil.sv tb/AIEPdiLoader_tb.sv > $(BUILD)/verilator.log 2>&1
-	obj_dir/VAIEPdiLoader_tb | grep -v 'READ  addr=00000000ff380004'
+	obj_dir/VAIEPdiLoader_tb | grep -v 'READ  addr=00000000ff3.0004'
 
 clean:
 	rm -rf obj_dir

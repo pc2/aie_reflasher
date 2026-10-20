@@ -1,10 +1,10 @@
 // AI Engine partial-PDI loader for the VCK5000 under Tapasco.
 //
 // pmc_pdi_loader: reusable core. Given the PS physical address of a partial PDI in
-// card DDR, it performs the Versal IPI handshake with the PLM over an AXI4-Lite
-// master that reaches the LPD (S_AXI_LPD): XilLoader LOAD_SUBSYSTEM_PDI
-// {0x030701, 0xF (DDR), addr_hi, addr_lo}, ring IPI<n>.TRIG, wait for IPI<n>.OBS
-// to clear, read the two response words. The PLM then executes the AIE CDOs,
+// card DDR and an IPI channel n (0..5, chosen per request), it performs the Versal IPI
+// handshake with the PLM over an AXI4-Lite master that reaches the LPD (S_AXI_LPD):
+// XilLoader LOAD_SUBSYSTEM_PDI {0x030701, 0xF (DDR), addr_hi, addr_lo}, ring
+// IPI<n>.TRIG, wait for IPI<n>.OBS to clear, read the two response words. The PLM then executes the AIE CDOs,
 // including the NPI writes at 0xF70A0000 that only the PMC may perform.
 //
 // AIEPdiLoader: Tapasco PE around it (tapasco_ctrl_slave + ipi_lpd_interface AXI4-Full master).
@@ -15,8 +15,11 @@
 //   message RAM  0xFF3F0000 + src_idx*0x200 + dst_idx*0x40, response at +0x20
 //   request  IPI<n>->PMC : 0xFF3F0000 + (2+n)*0x200 + 1*0x40
 //   response PMC->IPI<n> : 0xFF3F0000 + 1*0x200 + (2+n)*0x40 + 0x20
+//   IPI6 and PMC_NOBUF have no message buffers, so only channels 0..5 are usable.
+//   IPI5 is the PLM's "xsdb master": it skips the subsystem lookup for that channel,
+//   which makes it the safe choice on a design without isolation configuration.
 
-module pmc_pdi_loader #(int ADDR_WIDTH, int IPI_CHANNEL, int TIMEOUT_CYCLES) {
+module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     gen int AXI_WIDTH = 32
 
     axi4_lite_writer #(AXI_WIDTH, ADDR_WIDTH) writer
@@ -50,14 +53,11 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int IPI_CHANNEL, int TIMEOUT_CYCLES) {
     reader.rresp = rresp
     reader.rvalid = rvalid
 
-    // ---- IPI addresses ----
-    gen int IPI_BASE  = 4281532416 + IPI_CHANNEL * 65536   // 0xFF330000 + n*0x10000
-    gen int IPI_TRIG  = IPI_BASE
-    gen int IPI_OBS   = IPI_BASE + 4
-    gen int IPI_IDX   = 2 + IPI_CHANNEL
+    // ---- IPI addresses (channel selected at runtime) ----
+    gen int IPI_REGS  = 4281532416                         // 0xFF330000 = IPI0, +n*0x10000
     gen int MSG_RAM   = 4282318848                         // 0xFF3F0000
-    gen int REQ_BUF   = MSG_RAM + IPI_IDX * 512 + 64       // -> PMC (idx 1)
-    gen int RESP_BUF  = MSG_RAM + 512 + IPI_IDX * 64 + 32  // PMC -> us, +0x20
+    gen int MAX_CHANNEL = 5                                // last channel with message buffers
+    gen int NUM_CHANNEL_VALUES = 8                         // 3-bit field
 
     gen bool[32] CMD_LOAD_PDI = 32'h00030701  // len 3, XilLoader (7), LOAD_SUBSYSTEM_PDI (1)
     gen bool[32] PDI_SRC_DDR  = 32'h0000000F
@@ -84,13 +84,15 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int IPI_CHANNEL, int TIMEOUT_CYCLES) {
     gen int ERR_TIMEOUT = 3     // readback or OBS never matched
     gen int ERR_PLM = 4         // PLM answered with a non-zero status
     gen int ERR_BUSY = 5        // OBS already set before TRIG: a previous request was never acked
-    gen int NUM_ERRS = 6
+    gen int ERR_CHANNEL = 6     // requested IPI channel > 5 (no message buffer)
+    gen int NUM_ERRS = 7
 
     domain user
     state int#(FROM: 0, TO: NUM_STATES) cur_state
     state int#(FROM: 0, TO: NUM_STEPS) step
     state int#(FROM: 0, TO: TIMEOUT_CYCLES + 1) timer
     state bool[64] pdi_addr
+    state int#(FROM: 0, TO: NUM_CHANNEL_VALUES) ipi_channel
     state bool[32] plmi_status
     state bool[32] loader_status
     state int#(FROM: 0, TO: NUM_ERRS) err
@@ -99,9 +101,11 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int IPI_CHANNEL, int TIMEOUT_CYCLES) {
 
     // cmd_word: IPI request word 0. 0 selects LOAD_SUBSYSTEM_PDI; anything else is sent
     // verbatim (e.g. 0x010100 = XilPlmi FEATURES, a harmless ping that only tests the path).
+    // channel: IPI channel 0..5 to send on (5 = xsdb master, see header).
     state bool[32] cmd
-    action start : bool[64] pdi_ps_addr, bool[32] cmd_word {
+    action start : bool[64] pdi_ps_addr, bool[32] cmd_word, int#(FROM: 0, TO: NUM_CHANNEL_VALUES) channel {
         pdi_addr = pdi_ps_addr
+        ipi_channel = channel
         when BitsToUInt(cmd_word) == 0 {
             cmd = CMD_LOAD_PDI
         } else {
@@ -109,11 +113,22 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int IPI_CHANNEL, int TIMEOUT_CYCLES) {
         }
         plmi_status = 32'h00000000
         loader_status = 32'h00000000
-        err = ERR_NONE
         timer = 0
         step = 0
-        cur_state = S_WRITE
+        when channel > MAX_CHANNEL {
+            err = ERR_CHANNEL
+            cur_state = S_DONE
+        } else {
+            err = ERR_NONE
+            cur_state = S_WRITE
+        }
     }
+
+    // per-request addresses
+    int#(FROM: IPI_REGS, TO: IPI_REGS + NUM_CHANNEL_VALUES * 65536) IPI_TRIG = IPI_REGS + ipi_channel * 65536
+    int#(FROM: IPI_REGS, TO: IPI_REGS + NUM_CHANNEL_VALUES * 65536 + 4) IPI_OBS = IPI_TRIG + 4
+    int#(FROM: MSG_RAM, TO: MSG_RAM + 8192) REQ_BUF  = MSG_RAM + (2 + ipi_channel) * 512 + 64       // -> PMC (idx 1)
+    int#(FROM: MSG_RAM, TO: MSG_RAM + 8192) RESP_BUF = MSG_RAM + 512 + (2 + ipi_channel) * 64 + 32  // PMC -> us, +0x20
 
     trigger done : bool ok, int#(FROM: 0, TO: NUM_ERRS) error_code, bool[32] plmi, bool[32] loader
 
@@ -206,7 +221,7 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int IPI_CHANNEL, int TIMEOUT_CYCLES) {
                     cur_state = S_READ
                 }
             } else when step == 6 {
-                // stale request pending at the PMC? then the PLM is not servicing IPI5
+                // stale request pending at the PMC? then the PLM is not servicing this channel
                 when read_data[1] {
                     err = ERR_BUSY
                     cur_state = S_DONE
@@ -249,6 +264,7 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int IPI_CHANNEL, int TIMEOUT_CYCLES) {
         step = 0
         timer = 0
         err = ERR_NONE
+        ipi_channel = 0
     }
 }
 
@@ -260,11 +276,10 @@ module AIEPdiLoader {
     gen int CTRL_AXI_WIDTH = 64
     gen int CTRL_ADDR_WIDTH = 12
     gen int MEM_ADDR_WIDTH = 64
-    gen int IPI_CHANNEL = 5             // the PLM's "xsdb master" channel
     gen int TIMEOUT_CYCLES = 1 << 28    // ~1 s at 250 MHz
 
     // input_regs[0] = PS physical address of the partial PDI (0x100_0000_0000 + Tapasco offset)
-    // input_regs[1] = AxPROT/AxCACHE bits, see ctrl_bits below (0 = secure, unprivileged)
+    // input_regs[1] = AxPROT/AxCACHE bits, IPI channel, command override; see ctrl_bits below
     tapasco_ctrl_slave#(NUM_INPUT_REGS: 2, ADDR_WIDTH: CTRL_ADDR_WIDTH, AXI_WIDTH: CTRL_AXI_WIDTH) ctrl
 
     domain axi_control
@@ -298,9 +313,10 @@ module AIEPdiLoader {
     domain tapasco_intr
     output bool intr = ctrl.intr
 
-    pmc_pdi_loader #(ADDR_WIDTH: MEM_ADDR_WIDTH, IPI_CHANNEL: IPI_CHANNEL, TIMEOUT_CYCLES: TIMEOUT_CYCLES) loader
+    pmc_pdi_loader #(ADDR_WIDTH: MEM_ADDR_WIDTH, TIMEOUT_CYCLES: TIMEOUT_CYCLES) loader
 
     // input_regs[1] layout: [0:3] awprot, [4:7] arprot, [8:12] awcache, [12:16] arcache,
+    //                       [16:19] IPI channel 0..5 (the host passes 5, the xsdb master),
     //                       [32:64] IPI command word override (0 = LOAD_SUBSYSTEM_PDI)
     bool[64] ctrl_bits = ctrl.input_regs[1]
 
@@ -354,12 +370,12 @@ module AIEPdiLoader {
     loader.rvalid  = ipi_lpd_interface_rvalid
 
     when ctrl.start {
-        loader.start(ctrl.input_regs[0], ctrl_bits[32:64])
+        loader.start(ctrl.input_regs[0], ctrl_bits[32:64], BitsToUInt(ctrl_bits[16:19]))
     }
 
     // Return value: [0:32] PLMI status (0 = success) or 0xFFFFFF00|err for local errors,
     //               [32:64] XilLoader status
-    when loader.done : bool ok, int#(FROM: 0, TO: 6) error_code, bool[32] plmi, bool[32] loader_st {
+    when loader.done : bool ok, int#(FROM: 0, TO: 7) error_code, bool[32] plmi, bool[32] loader_st {
         bool[64] result
         when error_code == 0 | error_code == 4 {
             result[0:32] = plmi

@@ -1,5 +1,7 @@
 # Tapasco plugin: connect the AIEPdiLoader PE's ipi_lpd_interface straight to the CIPS
-# S_AXI_LPD port (direct PL-to-LPD path, never through the NoC) and enable IPI5.
+# S_AXI_LPD port (direct PL-to-LPD path, never through the NoC) and enable all IPI
+# channels. The PE selects the channel per request (AXI_CONFIG[18:16]), so psv_ipi_0..5
+# and psv_ipi_buffer must all be mapped into its address space; that is checked below.
 #
 # Why S_AXI_LPD: Vivado's CIPS model exposes the IPI message RAM (psv_ipi_buffer,
 # 0xFF3F0000, 4 KiB) only on the direct PL-to-PS slave ports, never on the NoC-side
@@ -18,6 +20,8 @@
 # Enable with  { "Feature": "aie_reflasher_ipi", "Properties": {} }.
 
 namespace eval aie_reflasher_ipi {
+
+  variable PE_SPACE /arch/target_ip_01_000/internal_target_ip_01_000/ipi_lpd_interface
 
   variable PE_SPACE /arch/target_ip_01_000/internal_target_ip_01_000/ipi_lpd_interface
   variable WANTED   {pspmc_0_psv_ipi_5 pspmc_0_psv_ipi_buffer}
@@ -57,7 +61,7 @@ namespace eval aie_reflasher_ipi {
       PS_GEN_IPI6_ENABLE 1 PS_GEN_IPI6_MASTER A72 \
       PS_USE_S_AXI_LPD 1 PS_S_AXI_LPD_DATA_WIDTH 32 \
     }] $cips
-    puts "aie_reflasher_ipi: IPI5 + S_AXI_LPD enabled on CIPS"
+    puts "aie_reflasher_ipi: IPI0..6 + S_AXI_LPD enabled on CIPS"
 
     connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $reflasher/ipi_lpd_interface] [get_bd_intf_pins $cips/S_AXI_LPD]
 
@@ -75,6 +79,22 @@ namespace eval aie_reflasher_ipi {
     connect_bd_net [get_bd_pins ipi_lpd_ila/clk] [get_bd_pins clocks_and_resets/design_clk]
     connect_bd_net [get_bd_pins ipi_lpd_ila/resetn] [get_bd_pins clocks_and_resets/design_peripheral_aresetn]
     assign_bd_address
+
+    # The PE picks the IPI channel at runtime: every channel with a message buffer
+    # (IPI0..5) plus the message RAM must be mapped at its fixed LPD address. IPI5 and
+    # the buffer are mandatory (default path); the others only matter for --ipi N.
+    set space [get_bd_addr_spaces $PE_SPACE]
+    foreach name {psv_ipi_0 psv_ipi_1 psv_ipi_2 psv_ipi_3 psv_ipi_4 psv_ipi_5 psv_ipi_buffer} {
+      set segs [get_bd_addr_segs -quiet -of_objects $space -filter "NAME =~ *_${name}"]
+      if {[llength $segs] == 0} {
+        if {$name eq "psv_ipi_5" || $name eq "psv_ipi_buffer"} {
+          error "aie_reflasher_ipi: $name is not mapped in $PE_SPACE"
+        }
+        puts "WARNING aie_reflasher_ipi: $name not mapped in $PE_SPACE (only --ipi N needs it)"
+      } else {
+        puts "aie_reflasher_ipi: $name -> [get_property OFFSET $segs] ([get_property RANGE $segs])"
+      }
+    }
   }
 
   proc write_ltx {} {

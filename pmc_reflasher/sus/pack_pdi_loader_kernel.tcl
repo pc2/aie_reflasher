@@ -32,7 +32,7 @@ set_property address_offset {0x020}           [ipx::get_registers PDI_ADDRESS -o
 set_property size           {64}              [ipx::get_registers PDI_ADDRESS -of_objects $CTRL_ADDR_BLOCK]
 
 ipx::add_register AXI_CONFIG $CTRL_ADDR_BLOCK
-set_property description    {AxPROT bits: [2:0] write, [6:4] read} [ipx::get_registers AXI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
+set_property description    {[2:0] AWPROT, [6:4] ARPROT, [11:8] AWCACHE, [15:12] ARCACHE, [18:16] IPI channel 0..5 (5 = xsdb master), [63:32] IPI command word override (0 = LOAD_SUBSYSTEM_PDI)} [ipx::get_registers AXI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
 set_property address_offset {0x030}           [ipx::get_registers AXI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
 set_property size           {64}              [ipx::get_registers AXI_CONFIG -of_objects $CTRL_ADDR_BLOCK]
 

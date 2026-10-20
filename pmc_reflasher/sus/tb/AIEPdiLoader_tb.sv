@@ -22,6 +22,7 @@ module AIEPdiLoader_tb;
     logic [31:0] m_rdata; logic [1:0] m_rresp; logic m_rlast, m_rvalid, m_rready;
     // knobs
     logic [31:0] plm_status = 0, plm_loader_status = 0; logic plm_never_ack = 0; logic decerr_all = 0; logic obs_preset = 0;
+    logic [2:0] ipi_channel = 5;
 
     AIEPdiLoader dut(
         .aclk(aclk), .aresetn(aresetn),
@@ -46,14 +47,15 @@ module AIEPdiLoader_tb;
         .ipi_lpd_interface_rvalid(m_rvalid), .ipi_lpd_interface_rready(m_rready)
     );
 
-    fake_plm_axil #(.IPI_CHANNEL(5), .PLM_DELAY(200)) plm(
+    fake_plm_axil #(.PLM_DELAY(200)) plm(
         .aclk(aclk), .aresetn(aresetn),
         .awaddr(m_awaddr), .awlen(m_awlen), .awsize(m_awsize), .awburst(m_awburst), .awvalid(m_awvalid), .awready(m_awready),
         .wdata(m_wdata), .wstrb(m_wstrb), .wlast(m_wlast), .wvalid(m_wvalid), .wready(m_wready),
         .bresp(m_bresp), .bvalid(m_bvalid), .bready(m_bready),
         .araddr(m_araddr), .arlen(m_arlen), .arsize(m_arsize), .arburst(m_arburst), .arvalid(m_arvalid), .arready(m_arready),
         .rdata(m_rdata), .rresp(m_rresp), .rlast(m_rlast), .rvalid(m_rvalid), .rready(m_rready),
-        .plm_status(plm_status), .plm_loader_status(plm_loader_status), .plm_never_ack(plm_never_ack), .decerr_all(decerr_all), .obs_preset(obs_preset)
+        .plm_status(plm_status), .plm_loader_status(plm_loader_status), .plm_never_ack(plm_never_ack), .decerr_all(decerr_all), .obs_preset(obs_preset),
+        .ipi_channel(ipi_channel)
     );
 
     task ctrl_write(input [11:0] addr, input [63:0] data);
@@ -68,11 +70,13 @@ module AIEPdiLoader_tb;
         wait (s_rvalid); data = s_rdata; @(posedge aclk); s_rready <= 0;
     endtask
 
-    task run_case(input string name, input [31:0] st, input never, input decerr, input busy, input [63:0] cmdw, input [63:0] expect_lo);
+    // chan_pe: channel field handed to the PE; chan_model: channel the fake IPI block implements
+    task run_case(input string name, input [31:0] st, input never, input decerr, input busy, input [63:0] cmdw,
+                  input [2:0] chan_pe, input [2:0] chan_model, input [63:0] expect_lo);
         logic [63:0] r;
-        plm_status = st; plm_never_ack = never; decerr_all = decerr; obs_preset = busy;
+        plm_status = st; plm_never_ack = never; decerr_all = decerr; obs_preset = busy; ipi_channel = chan_model;
         ctrl_write(12'h020, 64'h0000_0100_0020_0000);  // PDI at PS 0x100_0020_0000
-        ctrl_write(12'h030, cmdw << 32);                // AxPROT = 0, command override in [63:32]
+        ctrl_write(12'h030, (cmdw << 32) | (64'(chan_pe) << 16)); // AxPROT = 0, channel [18:16], command override [63:32]
         ctrl_write(12'h000, 64'h1);                     // start
         wait (intr);
         ctrl_read(12'h010, r);                           // result register (tapasco_ctrl_slave layout)
@@ -85,11 +89,14 @@ module AIEPdiLoader_tb;
     initial begin
         s_awvalid = 0; s_wvalid = 0; s_bready = 0; s_arvalid = 0; s_rready = 0;
         repeat (5) @(posedge aclk); aresetn = 1; repeat (5) @(posedge aclk);
-        run_case("happy",   32'h0,    0, 0, 0, 64'h0,      64'h0);
-        run_case("plm_err", 32'h1234, 0, 0, 0, 64'h0,      64'h1234);
-        run_case("decerr",  32'h0,    0, 1, 0, 64'h0,      64'hFFFFFF01);
-        run_case("busy",    32'h0,    0, 0, 1, 64'h0,      64'hFFFFFF05);
-        run_case("ping",    32'h0,    0, 0, 0, 64'h010100, 64'h0);
+        run_case("happy",      32'h0,    0, 0, 0, 64'h0,      5, 5, 64'h0);
+        run_case("plm_err",    32'h1234, 0, 0, 0, 64'h0,      5, 5, 64'h1234);
+        run_case("decerr",     32'h0,    0, 1, 0, 64'h0,      5, 5, 64'hFFFFFF01);
+        run_case("busy",       32'h0,    0, 0, 1, 64'h0,      5, 5, 64'hFFFFFF05);
+        run_case("ping",       32'h0,    0, 0, 0, 64'h010100, 5, 5, 64'h0);
+        run_case("ipi2",       32'h0,    0, 0, 0, 64'h0,      2, 2, 64'h0);         // channel select reaches IPI2's regs/buffers
+        run_case("ipi0_vs_3",  32'h0,    0, 0, 0, 64'h0,      0, 3, 64'hFFFFFF02);  // wrong block: IPI0's OBS unmapped -> read DECERR
+        run_case("bad_chan",   32'h0,    0, 0, 0, 64'h0,      7, 5, 64'hFFFFFF06);  // channel 7 rejected before touching the bus
         // timeout case needs a TB build with a small TIMEOUT_CYCLES (edit gen int in the .sus)
         $finish;
     end

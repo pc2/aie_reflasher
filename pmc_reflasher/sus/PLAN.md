@@ -7,16 +7,19 @@ the Tapasco side changes are small.
 
 ## 1. Modules (`aie_pdi_loader.sus`, compiles with sus_compiler 0.4.0)
 
-### `pmc_pdi_loader #(ADDR_WIDTH, IPI_CHANNEL, TIMEOUT_CYCLES)` (reusable core)
+### `pmc_pdi_loader #(ADDR_WIDTH, TIMEOUT_CYCLES)` (reusable core)
 
 - Owns one `axi4_lite_writer` and one `axi4_lite_reader` (from `sus-xrt/axi_lite.sus`),
   exported as a plain AXI4-Lite master (`awaddr .. rready`, all latency `'0`).
-- Interface: `action start(bool[64] pdi_ps_addr)`, `output bool busy`,
+- Interface: `action start(bool[64] pdi_ps_addr, bool[32] cmd_word, int channel)`, `output bool busy`,
   `trigger done(bool ok, error_code, bool[32] plmi_status, bool[32] loader_status)`,
   `action rst`.
-- Addresses are generated from `IPI_CHANNEL` (default 5, the PLM's xsdb-master channel):
+- Addresses are computed per request from the `channel` argument n (0..5; 5 is the PLM's
+  xsdb-master channel, the only one served without a subsystem configuration):
   TRIG/OBS at `0xFF330000 + n*0x10000`, request buffer
   `0xFF3F0000 + (2+n)*0x200 + 0x40`, response buffer `0xFF3F0000 + 0x200 + (2+n)*0x40 + 0x20`.
+  IPI6 and PMC_NOBUF have no message buffer, so n > 5 is rejected with error 6 before
+  the bus is touched. (2026-10-20: was a `gen` parameter `IPI_CHANNEL` before.)
 - Sequencer: a 10-step table driven by a 6-state machine
   (`S_WRITE -> S_WRITE_WAIT` for writes, `S_READ -> S_READ_WAIT` for reads/polls):
 
@@ -32,13 +35,16 @@ the Tapasco side changes are small.
   Every write waits for its BRESP before the next step, so ordering never depends on the
   interconnect. Any BRESP/RRESP != OKAY, a timeout (`TIMEOUT_CYCLES`, default 2^28 ~ 1 s at
   250 MHz) or a non-zero PLMI status ends in `done(ok=false, code, ...)`.
-- Error codes: 1 write response, 2 read response, 3 timeout, 4 PLM status non-zero.
+- Error codes: 1 write response, 2 read response, 3 timeout, 4 PLM status non-zero,
+  5 OBS busy before TRIG (stale request, PLM not servicing the channel), 6 channel > 5.
 
 ### `AIEPdiLoader` (Tapasco PE)
 
 - `tapasco_ctrl_slave#(NUM_INPUT_REGS: 2)`: reg 0 = PS physical address of the PDI
-  (`0x100_0000_0000 + Tapasco device offset`), reg 1 = AxPROT bits as before
-  (`[0:3]` write, `[4:7]` read; 0 = secure/unprivileged, which the IPI apertures accept).
+  (`0x100_0000_0000 + Tapasco device offset`), reg 1 = `[0:3]` AWPROT, `[4:7]` ARPROT
+  (0 = secure/unprivileged, which the IPI apertures accept), `[8:12]` AWCACHE, `[12:16]`
+  ARCACHE, `[16:19]` IPI channel (host default 5), `[32:64]` IPI command word override
+  (0 = LOAD_SUBSYSTEM_PDI, `0x010100` = XilPlmi FEATURES ping).
 - Exports `s_axi_control` and the `small_axil` master (64-bit address, 32-bit data) with
   the exact port names of the old PE, so `pack_*.tcl` and the Tapasco plugin stay similar.
   No bulk port any more.
@@ -124,7 +130,10 @@ and `;` is not a statement separator in SUS.
 
 - `TIMEOUT_CYCLES = 2^28` is a guess at the PLM's worst case for a ~100 KB PDI; raise it if
   big designs (multi-MB ELFs) hit error 3 while the PLM is still working.
-- IPI5 is shared with xsdb. If JTAG debugging and reflashing must coexist, instantiate the
-  core with `IPI_CHANNEL: 0..4` instead (needs `PS_GEN_IPIn_ENABLE 1` for that channel).
+- IPI5 is shared with xsdb. If JTAG debugging and reflashing must coexist, try
+  `reflash-aie-loader --ipi 0..4`; whether the PLM accepts a channel that no subsystem
+  claims is untested (for non-IPI5 channels it calls `XPmSubsystem_GetSubSysIdByIpiMask`,
+  which returns INVALID_SUBSYSID on a design without isolation config). The plugin maps
+  psv_ipi_0..5 so this can be tried without a rebuild.
 - The PE issues secure (AxPROT[1]=0) transactions; if a future design enables LPD XPPU
   protection, the PL master ID will need an aperture entry.

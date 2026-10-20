@@ -12,7 +12,6 @@
 // exercise the loader's timeout path.
 
 module fake_plm_axil #(
-    parameter int IPI_CHANNEL = 5,
     parameter int PLM_DELAY   = 200
 )(
     input  logic        aclk,
@@ -48,12 +47,13 @@ module fake_plm_axil #(
     input  logic [31:0] plm_loader_status,
     input  logic        plm_never_ack,
     input  logic        decerr_all,     // 1: answer DECERR to everything (unreachable LPD)
-    input  logic        obs_preset      // 1: OBS PMC bit stuck high (stale request)
+    input  logic        obs_preset,     // 1: OBS PMC bit stuck high (stale request)
+    input  logic [2:0]  ipi_channel     // which IPI<n> block (0..5) the model implements
 );
-    localparam logic [31:0] IPI_BASE = 32'hFF330000 + IPI_CHANNEL * 32'h10000;
     localparam logic [31:0] MSG_RAM  = 32'hFF3F0000;
-    localparam int          IPI_IDX  = 2 + IPI_CHANNEL;
-    localparam logic [31:0] RESP_BUF = MSG_RAM + 32'h200 + IPI_IDX * 32'h40 + 32'h20;
+    logic [31:0] IPI_BASE, RESP_BUF;
+    assign IPI_BASE = 32'hFF330000 + ipi_channel * 32'h10000;
+    assign RESP_BUF = MSG_RAM + 32'h200 + (2 + ipi_channel) * 32'h40 + 32'h20;
 
     logic [31:0] ram [0:1023];   // 4 KiB message RAM, word addressed
     logic        obs_pmc;        // OBS bit 1 of our channel
