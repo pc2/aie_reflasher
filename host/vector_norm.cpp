@@ -1,6 +1,6 @@
 // Vector-norm check for the DataStreamerVN + AIE design (tapasco-examples/Vector-Norm/sw/C++,
 // Boost dependency removed). Streams (x, y) pairs through the PL PE into the AIE graph and
-// checks z = sqrt(x^2 + y^2). With aie/libadf_b.pdi loaded every result is doubled, so this
+// checks z = sqrt(x^2 + y^2). With build/libadf_b.pdi loaded every result is doubled, so this
 // tool is how a reflash is verified: it passes with design A and reports every index wrong
 // by a factor of 2 with design B.
 //

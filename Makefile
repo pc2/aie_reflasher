@@ -6,11 +6,11 @@
 #   make package     Vivado IP packaging of both PEs -> build/AIEPdiLoader.zip, build/DataStreamerVN.zip,
 #                    each imported into Tapasco right after packaging (IDs $(PE_ID), $(VN_ID))
 #   make link_plugin symlink tapasco/aie_reflasher_plugin.tcl into the Tapasco vck5000 plugin dir
-#   make aie         aie/libadf_a.a and aie/libadf_b.a (-DDOUBLE_OUTPUT) from aie/src with aiecompiler
+#   make aie         build/libadf_a.a and build/libadf_b.a (-DDOUBLE_OUTPUT) from aie/ with aiecompiler
 #   make jobfile     build/pdi-loader.json with ADF=$(ADF) substituted (builds the archive if needed)
 #   make bitstream   tapasco --jobsFile build/pdi-loader.json; copies the PDI (and debug_probes.ltx
 #                    if the plugin's ILA was enabled) to build/reconfigurable_bitstream.pdi, build/debug_probes.ltx
-#   make pdi         aie/libadf_{a,b}.pdi: AIE-only partial PDIs from the libadf archives, stamped with
+#   make pdi         build/libadf_{a,b}.pdi: AIE-only partial PDIs from the libadf archives, stamped with
 #                    the IDCODE of build/reconfigurable_bitstream.pdi
 #   make check-pdi   structural check of the partial PDIs
 #   make host        build/reflash-aie-loader and build/vector-norm
@@ -18,7 +18,7 @@
 #                    archives, IP packaging + import and the bitstream when they are missing
 #
 # Every target carries its full dependency chain, so nothing relies on checked-in build
-# products: pdi -> bitstream -> IP zips + job file -> AIE archive -> aie/src, codegen -> sus/.
+# products: pdi -> bitstream -> IP zips + job file -> AIE archive -> aie/, codegen -> sus/.
 #
 # Environment: `source <tapasco workspace>/tapasco-setup.sh` provides TAPASCO_WORK_DIR and
 # TAPASCO_HOME_TOOLFLOW; vivado/bootgen/aiecompiler come from the Vitis 2023.1 settings script
@@ -45,9 +45,9 @@ TAPASCO_PLUGIN_DIR ?= $(TAPASCO_HOME_TOOLFLOW)/vivado/platform/vck5000/plugins
 PE_ID ?= 10203
 VN_ID ?= 10204
 
-# AIE graph archive the bitstream is built with (the running design must match aie/libadf_a.pdi
-# or aie/libadf_b.pdi only in its PL interface; which one is loaded at boot does not matter).
-ADF ?= aie/libadf_a.a
+# AIE graph archive the bitstream is built with (which of the two graphs is loaded at boot
+# does not matter: they share the PL interface).
+ADF ?= $(BUILD)/libadf_a.a
 
 # Where Tapasco leaves the composed design, and the local copy `make bitstream` keeps. The
 # partial PDIs copy their IDCODE from that copy: the PLM rejects a PDI whose IDCODE differs
@@ -64,7 +64,7 @@ CODEGEN_VN   := $(BUILD)/data_streamer_vn.sv
 # AIE graph compile (Vitis 2023.1)
 AIECC      ?= $(XILINX_VITIS)/aietools/bin/aiecompiler
 AIE_FLAGS  := -v -Xchess=main:darts.xargs=-nb -target=hw -platform=$(PLATFORM_FILE) \
-              -include=$(XILINX_VITIS)/aietools/include -include=$(abspath aie/src)
+              -include=$(XILINX_VITIS)/aietools/include -include=$(abspath aie)
 
 CXX      ?= g++
 CXXFLAGS ?= -std=gnu++20 -O2 -Wall
@@ -141,37 +141,37 @@ $(BITSTREAM): | $(BUILD)/pdi-loader.json $(BUILD)/AIEPdiLoader.zip $(BUILD)/Data
 	@echo "bitstream: $(BITSTREAM)$$(test -f $(BUILD)/debug_probes.ltx && echo ', probes: $(BUILD)/debug_probes.ltx')"
 
 # ---------------------------------------------------------------- AIE graphs
-# One source tree; graph B is the same code built with -DDOUBLE_OUTPUT (sum_sqrt.cpp).
+# Sources in aie/; graph B is the same code built with -DDOUBLE_OUTPUT (sum_sqrt.cpp).
 # Real file targets: anything that needs an archive (jobfile, pdi) builds it when it is
 # missing or older than the sources.
-AIE_SRC := $(wildcard aie/src/*)
+AIE_SRC := $(wildcard aie/*.cpp aie/*.h)
 
-aie: aie/libadf_a.a aie/libadf_b.a
+aie: $(BUILD)/libadf_a.a $(BUILD)/libadf_b.a
 
 # $(1) = variant letter, $(2) = extra aiecompiler flags
 define AIE_BUILD
 	@test -n "$(XILINX_VITIS)" -a -n "$(PLATFORM_FILE)" || { echo "set XILINX_VITIS and PLATFORM_FILE (VCK5000 .xpfm) for aiecompiler"; exit 1; }
 	rm -rf $(BUILD)/aie_$(1) && mkdir -p $(BUILD)/aie_$(1)
-	cd $(BUILD)/aie_$(1) && $(AIECC) $(AIE_FLAGS) $(2) -workdir=work $(abspath aie/src/graph.cpp)
+	cd $(BUILD)/aie_$(1) && $(AIECC) $(AIE_FLAGS) $(2) -workdir=work $(abspath aie/graph.cpp)
 	cp $(BUILD)/aie_$(1)/libadf.a $@
 endef
 
-aie/libadf_a.a: $(AIE_SRC)
+$(BUILD)/libadf_a.a: $(AIE_SRC)
 	$(call AIE_BUILD,a,)
-aie/libadf_b.a: $(AIE_SRC)
+$(BUILD)/libadf_b.a: $(AIE_SRC)
 	$(call AIE_BUILD,b,-Xpreproc=-DDOUBLE_OUTPUT)
 
 # ---------------------------------------------------------------- partial PDIs
-pdi: aie/libadf_a.pdi aie/libadf_b.pdi
+pdi: $(BUILD)/libadf_a.pdi $(BUILD)/libadf_b.pdi
 
 # A partial PDI depends on its archive and on the full bitstream (for the IDCODE): a missing
 # archive runs aiecompiler, a missing build/reconfigurable_bitstream.pdi runs the Tapasco build.
-aie/%.pdi: aie/%.a $(BITSTREAM) tools/make_aie_pdi.sh
+$(BUILD)/%.pdi: $(BUILD)/%.a $(BITSTREAM) tools/make_aie_pdi.sh
 	tools/make_aie_pdi.sh $< $@ --like $(abspath $(BITSTREAM))
 
-check-pdi: aie/libadf_a.pdi aie/libadf_b.pdi
-	python3 tools/pdi_info.py aie/libadf_a.pdi
-	python3 tools/pdi_info.py aie/libadf_b.pdi
+check-pdi: $(BUILD)/libadf_a.pdi $(BUILD)/libadf_b.pdi
+	python3 tools/pdi_info.py $(BUILD)/libadf_a.pdi
+	python3 tools/pdi_info.py $(BUILD)/libadf_b.pdi
 
 # ---------------------------------------------------------------- host tools
 host: $(BUILD)/reflash-aie-loader $(BUILD)/vector-norm
@@ -187,10 +187,9 @@ $(BUILD)/reflash-aie-loader: host/reflash_aie_loader.cpp
 $(BUILD)/vector-norm: host/vector_norm.cpp
 	$(HOST_BUILD)
 
-# Removes every generated file, including the AIE archives, the partial PDIs and the bitstream
-# copy in build/ (that one takes hours to regenerate), plus the side files Vivado/xsim and
-# Python leave next to the sources.
+# Removes every generated file, including the bitstream copy in build/ (hours to regenerate),
+# plus the side files Vivado/xsim and Python leave next to the sources.
 clean:
-	rm -rf $(BUILD) aie/libadf_*.a aie/libadf_*.pdi
+	rm -rf $(BUILD)
 	rm -rf sus/tb/vivado.log sus/tb/vivado.jou sus/tb/vivado_*.backup.* sus/tb/.Xil tools/__pycache__ bootgen_log.txt
 	

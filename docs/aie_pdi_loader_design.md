@@ -116,8 +116,8 @@ and `;` is not a statement separator in SUS.
 
 1. Build the Tapasco design with the new PE and the plugin changes; verify the address map.
 2. Load it; run `vector-norm` for the baseline.
-3. `reflash-aie-loader aie/libadf_a.pdi` (reload of the running design, must return 0).
-4. `reflash-aie-loader aie/libadf_b.pdi`, `vector-norm` again: doubled outputs.
+3. `reflash-aie-loader build/libadf_a.pdi` (reload of the running design, must return 0).
+4. `reflash-aie-loader build/libadf_b.pdi`, `vector-norm` again: doubled outputs.
 5. Time it: the PE return already includes the whole PLM load, so Tapasco's job runtime is
    the reflash latency.
 

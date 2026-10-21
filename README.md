@@ -30,7 +30,7 @@ This repository contains everything needed to reproduce the setup: the reflasher
 `DataStreamerVN` example PE that feeds the AI Engine (a SUS port of the Bluespec PE from
 esa-tu-darmstadt/tapasco-examples, so no Bluespec compiler is needed), simulation testbenches
 for both, the Tapasco platform plugin, the host tools, the partial-PDI builder and the
-Vector-Norm AIE graph. The graph is compiled twice (`aie/libadf_a.a`, `aie/libadf_b.a`); the
+Vector-Norm AIE graph. The graph is compiled twice (`build/libadf_a.a`, `build/libadf_b.a`); the
 variants differ only in a `* 2.0` on the output, so a successful reflash is visible from the
 host.
 
@@ -47,11 +47,10 @@ host.
 | `tapasco/pdi-loader.json` | Tapasco job file (`@ADF@` is filled in by `make jobfile`) (`DataStreamerVN` + `AIEPdiLoader` + AI-Engine + DMA-Streaming) |
 | `host/reflash_aie_loader.cpp` | host tool that performs a reflash |
 | `host/vector_norm.cpp` | host tool that runs the vector-norm example to check which AIE graph is live |
-| `build/reflash-aie-loader`, `build/vector-norm` | prebuilt host tools, the only tracked files in `build/` (`make host` rebuilds them in place) |
 | `tools/make_aie_pdi.sh` | `libadf.a` to AIE-only partial PDI (bootgen) |
 | `tools/pdi_info.py` | dumps and sanity-checks a PDI; `tools/cdo_parser.py`, `tools/cdo_decode.py` decode CDO streams |
-| `aie/src/` | the Vector-Norm AIE graph (from tapasco-examples, PLIOs pinned to fixed shim tiles); `-DDOUBLE_OUTPUT` gives graph B |
-| `aie/` | the two compiled graphs `libadf_{a,b}.a` and the partial PDIs built from them |
+| `aie/` | the Vector-Norm AIE graph (from tapasco-examples, PLIOs pinned to fixed shim tiles); `-DDOUBLE_OUTPUT` gives graph B |
+| `build/` | every generated file: SystemVerilog, IP zips, AIE archives, partial PDIs, the bitstream copy, host tools |
 | `docs/` | design notes, background on the PMC/IPI path, CDO format reference |
 | `img/` | block-design and address-map screenshots from the development, referenced from `docs/background.md` |
 | `sus-xrt/`, `sus-tapasco/` | submodules with the SUS AXI and Tapasco control-slave libraries |
@@ -111,12 +110,12 @@ file is written next to the bitstream.
 ### 4. AIE graphs
 
 ```
-make aie          # aiecompiler: aie/src -> aie/libadf_a.a, and with -DDOUBLE_OUTPUT -> aie/libadf_b.a
+make aie          # aiecompiler: aie/ -> build/libadf_a.a, and with -DDOUBLE_OUTPUT -> build/libadf_b.a
 ```
 
 Both archives come from the same tree; `sum_sqrt.cpp` multiplies the norm by 2.0 under
 `#ifdef DOUBLE_OUTPUT`. The archives are ordinary make targets, so the job file and the
-partial PDIs build them on demand when they are missing or older than `aie/src`.
+partial PDIs build them on demand when they are missing or older than the sources in `aie/`.
 `graph.h` pins the three PLIOs to shim tiles 12, 13 and 14. That pinning is what makes the graphs
 interchangeable at runtime: the PL side of the design is built once against those tiles,
 and any graph that keeps them can be loaded by the reflasher.
@@ -124,7 +123,7 @@ and any graph that keeps them can be loaded by the reflasher.
 ### 5. Build the bitstream
 
 ```
-make jobfile ADF=$PWD/aie/libadf_a.a   # build/pdi-loader.json
+make jobfile ADF=build/libadf_a.a    # build/pdi-loader.json (the default)
 make bitstream                         # tapasco --jobsFile build/pdi-loader.json
 ```
 
@@ -138,7 +137,7 @@ restart the multi-hour build on its own (`make -B bitstream` does).
 ### 6. Build the partial PDIs
 
 ```
-make pdi          # aie/libadf_a.pdi, aie/libadf_b.pdi (bootgen)
+make pdi          # build/libadf_a.pdi, build/libadf_b.pdi (bootgen)
 make check-pdi    # structure and IDCODE check
 ```
 
@@ -159,9 +158,9 @@ make host         # build/reflash-aie-loader, build/vector-norm
 
 ```
 build/vector-norm                      # design A: SUCCESS
-build/reflash-aie-loader aie/libadf_b.pdi
+build/reflash-aie-loader build/libadf_b.pdi
 build/vector-norm --expect-scale 2     # design B: SUCCESS (every output doubled)
-build/reflash-aie-loader aie/libadf_a.pdi
+build/reflash-aie-loader build/libadf_a.pdi
 build/vector-norm                      # back to A
 ```
 
@@ -216,13 +215,11 @@ original and `vector-norm` accepts either (it tries the SUS VLNV first, then the
   is the cycle count from start to the last result beat. The PE raises its interrupt when
   `SAMPLES / 16` result beats have been sent.
 
-The checked-in `libadf` archives were compiled from `aie/src` with the Bluespec PE still in
-the design; the SUS PE is verified in simulation (`make sim`) against a behavioural AIE but
-has not yet been run on hardware.
+The SUS PE is verified in simulation (`make sim`) against a behavioural AIE and on the card
+(2026-10-21: bitstream with both SUS PEs, reflash A -> B -> A with correct Vector-Norm
+results).
 
 ## TODO
 
-- Run the SUS `DataStreamerVN` on the card (rebuild the bitstream with both PEs, then the
-  reflash sequence above) and confirm the Vector-Norm results.
 - The timeout of the loader PE (`TIMEOUT_CYCLES = 2^28`, about 1 s at 312.5 MHz) was chosen
   for 100 KB PDIs; multi-MB AIE images may need a larger value.
