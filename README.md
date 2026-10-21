@@ -194,9 +194,10 @@ slot `0xFF3F0000 + (2 + n) * 0x200 + 0x40` (request to the PMC) with the respons
 same slot at `+0x20`. It writes the four request words `{0x030701, 0xF, addr_hi, addr_lo}`
 (XilLoader `LOAD_SUBSYSTEM_PDI`, source DDR, PDI address as the PMC sees it:
 `0x100_0000_0000 + Tapasco device offset`), reads the first word back to prove the RAM is
-reachable, plants a sentinel in the response slot, writes the PMC bit into TRIG and polls OBS
-until the PLM clears it. The response slot then holds the PLMI status and the XilLoader
-status. Details, the step table and the bring-up log are in
+reachable, plants a sentinel in the response slot, writes the PMC bit into TRIG, polls OBS until the
+PLM clears it, then polls the response slot until the sentinel has been replaced by the
+PLMI status (the PLM acks before it has finished the load). The second word is the
+XilLoader status. Details, the step table and the bring-up log are in
 [docs/aie_pdi_loader_design.md](docs/aie_pdi_loader_design.md); why the PMC has to do this and
 why the earlier PL-only attempt could not are in [docs/background.md](docs/background.md).
 

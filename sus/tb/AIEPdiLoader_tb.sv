@@ -21,7 +21,7 @@ module AIEPdiLoader_tb;
     logic [3:0] m_arcache; logic [2:0] m_arprot; logic [3:0] m_arqos, m_arregion; logic m_arvalid, m_arready;
     logic [31:0] m_rdata; logic [1:0] m_rresp; logic m_rlast, m_rvalid, m_rready;
     // knobs
-    logic [31:0] plm_status = 0, plm_loader_status = 0; logic plm_never_ack = 0; logic decerr_all = 0; logic obs_preset = 0;
+    logic [31:0] plm_status = 0, plm_loader_status = 0; logic plm_never_ack = 0; logic ack_early = 0; logic decerr_all = 0; logic obs_preset = 0;
     logic [2:0] ipi_channel = 5;
 
     AIEPdiLoader dut(
@@ -54,7 +54,7 @@ module AIEPdiLoader_tb;
         .bresp(m_bresp), .bvalid(m_bvalid), .bready(m_bready),
         .araddr(m_araddr), .arlen(m_arlen), .arsize(m_arsize), .arburst(m_arburst), .arvalid(m_arvalid), .arready(m_arready),
         .rdata(m_rdata), .rresp(m_rresp), .rlast(m_rlast), .rvalid(m_rvalid), .rready(m_rready),
-        .plm_status(plm_status), .plm_loader_status(plm_loader_status), .plm_never_ack(plm_never_ack), .decerr_all(decerr_all), .obs_preset(obs_preset),
+        .plm_status(plm_status), .plm_loader_status(plm_loader_status), .plm_never_ack(plm_never_ack), .ack_early(ack_early), .decerr_all(decerr_all), .obs_preset(obs_preset),
         .ipi_channel(ipi_channel)
     );
 
@@ -72,9 +72,9 @@ module AIEPdiLoader_tb;
 
     // chan_pe: channel field handed to the PE; chan_model: channel the fake IPI block implements
     task run_case(input string name, input [31:0] st, input never, input decerr, input busy, input [63:0] cmdw,
-                  input [2:0] chan_pe, input [2:0] chan_model, input [63:0] expect_lo);
+                  input [2:0] chan_pe, input [2:0] chan_model, input [63:0] expect_lo, input early = 0);
         logic [63:0] r;
-        plm_status = st; plm_never_ack = never; decerr_all = decerr; obs_preset = busy; ipi_channel = chan_model;
+        plm_status = st; plm_never_ack = never; decerr_all = decerr; obs_preset = busy; ipi_channel = chan_model; ack_early = early;
         ctrl_write(12'h020, 64'h0000_0100_0020_0000);  // PDI at PS 0x100_0020_0000
         ctrl_write(12'h030, (cmdw << 32) | 64'(chan_pe)); // channel [2:0], command override [63:32]
         ctrl_write(12'h000, 64'h1);                     // start
@@ -97,6 +97,8 @@ module AIEPdiLoader_tb;
         run_case("ipi2",       32'h0,    0, 0, 0, 64'h0,      2, 2, 64'h0);         // channel select reaches IPI2's regs/buffers
         run_case("ipi0_vs_3",  32'h0,    0, 0, 0, 64'h0,      0, 3, 64'hFFFFFF02);  // wrong block: IPI0's OBS unmapped -> read DECERR
         run_case("bad_chan",   32'h0,    0, 0, 0, 64'h0,      7, 5, 64'hFFFFFF06);  // channel 7 rejected before touching the bus
+        run_case("ack_early",  32'h0,    0, 0, 0, 64'h0,      2, 2, 64'h0,       1);  // OBS cleared before the response is written: PE must wait
+        run_case("ack_early_err", 32'h1234, 0, 0, 0, 64'h0,   2, 2, 64'h1234,    1);
         // timeout case needs a TB build with a small TIMEOUT_CYCLES (edit gen int in the .sus)
         $finish;
     end

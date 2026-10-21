@@ -71,8 +71,9 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     // ---- sequencer ----
     // step: 0..3 write request words, 4 read back word 0, 5 write sentinel into the
     // response buffer, 6 read OBS once (PMC bit must be clear: no stale request),
-    // 7 write TRIG, 8 poll OBS until the PMC bit clears, 9 read response[0],
-    // 10 read response[1]
+    // 7 write TRIG, 8 poll OBS until the PMC bit clears, 9 poll response[0] until it is no
+    // longer the sentinel (the PLM may clear OBS when it queues the command and write the
+    // response only when the load has finished), 10 read response[1]
     gen int S_IDLE = 0
     gen int S_WRITE = 1      // issue the write of the current step
     gen int S_WRITE_WAIT = 2 // wait for its BRESP
@@ -243,8 +244,11 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
                     cur_state = S_READ
                 }
             } else when step == 9 {
-                plmi_status = read_data
-                step = 10
+                // response written? the sentinel is replaced by the PLMI status
+                when BitsToUInt(read_data) != BitsToUInt(SENTINEL) {
+                    plmi_status = read_data
+                    step = 10
+                }
                 cur_state = S_READ
             } else {
                 loader_status = read_data

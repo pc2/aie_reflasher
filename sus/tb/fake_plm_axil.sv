@@ -46,6 +46,7 @@ module fake_plm_axil #(
     input  logic [31:0] plm_status,
     input  logic [31:0] plm_loader_status,
     input  logic        plm_never_ack,
+    input  logic        ack_early,      // 1: clear OBS at PLM_DELAY, write the response PLM_DELAY later (real PLM behaviour)
     input  logic        decerr_all,     // 1: answer DECERR to everything (unreachable LPD)
     input  logic        obs_preset,     // 1: OBS PMC bit stuck high (stale request)
     input  logic [2:0]  ipi_channel     // which IPI<n> block (0..5) the model implements
@@ -57,6 +58,7 @@ module fake_plm_axil #(
 
     logic [31:0] ram [0:1023];   // 4 KiB message RAM, word addressed
     logic        obs_pmc;        // OBS bit 1 of our channel
+    int          resp_timer;
     int          plm_timer;
 
     function automatic bit in_ram(input logic [63:0] a);
@@ -74,7 +76,7 @@ module fake_plm_axil #(
     always_ff @(posedge aclk) begin
         if (!aresetn) begin
             aw_got <= 0; w_got <= 0; bvalid <= 0; bresp <= 0;
-            obs_pmc <= 0; plm_timer <= -1;
+            obs_pmc <= 0; plm_timer <= -1; resp_timer <= -1;
         end else begin
             if (awvalid && awready) begin
                 aw_got <= 1; aw_q <= awaddr;
@@ -106,10 +108,19 @@ module fake_plm_axil #(
             if (plm_timer == 0) begin
                 plm_timer <= -1;
                 if (!plm_never_ack) begin
-                    ram[(RESP_BUF - MSG_RAM) >> 2]     <= plm_status;
-                    ram[(RESP_BUF - MSG_RAM) >> 2 + 1] <= plm_loader_status;
                     obs_pmc <= 0;
+                    if (ack_early) resp_timer <= PLM_DELAY;   // response comes later
+                    else begin
+                        ram[(RESP_BUF - MSG_RAM) >> 2]     <= plm_status;
+                        ram[(RESP_BUF - MSG_RAM) >> 2 + 1] <= plm_loader_status;
+                    end
                 end
+            end
+            if (resp_timer > 0) resp_timer <= resp_timer - 1;
+            if (resp_timer == 0) begin
+                resp_timer <= -1;
+                ram[(RESP_BUF - MSG_RAM) >> 2]     <= plm_status;
+                ram[(RESP_BUF - MSG_RAM) >> 2 + 1] <= plm_loader_status;
             end
         end
     end

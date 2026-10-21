@@ -32,7 +32,8 @@ the Tapasco side changes are small.
   | 5 | write | resp+0 | `0xDEADBEEF` sentinel |
   | 6 | write | TRIG | `0x2` (PMC bit) |
   | 7 | poll | OBS | until bit 1 clear (PLM acked) |
-  | 8, 9 | read | resp+0, resp+4 | PLMI status, XilLoader status |
+  | 8 | poll | resp+0 | until `!= 0xDEADBEEF` (the PLM may clear OBS before it writes the response) |
+  | 9 | read | resp+4 | XilLoader status |
 
   Every write waits for its BRESP before the next step, so ordering never depends on the
   interconnect. Any BRESP/RRESP != OKAY, a timeout (`TIMEOUT_CYCLES`, default 2^28 ~ 1 s at
@@ -138,6 +139,10 @@ and `;` is not a statement separator in SUS.
 
 ## 8. Open points
 
+- 2026-10-21: on hardware the PE still read the sentinel after the OBS clear although the
+  reflash succeeded. The PE now polls response[0] until the sentinel is gone (step 8 above).
+  Confirmed on the card with xsdb after a reflash: `mrd 0xFF3F0860 2` (IPI2) shows two zero
+  words, i.e. the PLM did write the response there, just after it had cleared OBS.
 - `TIMEOUT_CYCLES = 2^28` is a guess at the PLM's worst case for a ~100 KB PDI; raise it if
   big designs (multi-MB ELFs) hit error 3 while the PLM is still working.
 - IPI5 is shared with xsdb, so the host defaults to IPI2 (verified on hardware); any of
