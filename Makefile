@@ -186,6 +186,10 @@ $(BUILD)/reflash-aie-loader: host/reflash_aie_loader.cpp
 $(BUILD)/vector-norm: host/vector_norm.cpp
 	$(HOST_BUILD)
 
+# Removes every generated file, including the AIE archives, the partial PDIs and the bitstream
+# copy in build/ (that one takes hours to regenerate), plus the side files Vivado/xsim and
+# Python leave next to the sources.
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD) aie/libadf_*.a aie/libadf_*.pdi
+	rm -rf sus/tb/vivado.log sus/tb/vivado.jou sus/tb/vivado_*.backup.* sus/tb/.Xil tools/__pycache__ bootgen_log.txt
 	

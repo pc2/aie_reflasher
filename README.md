@@ -38,7 +38,7 @@ host.
 
 | Path | Contents |
 |---|---|
-| `Makefile` | every build step (see below); no CMake |
+| `Makefile` | every build step (see below); no CMake. `make clean` removes all generated files, the bitstream copy included |
 | `sus/aie_pdi_loader.sus` | the `AIEPdiLoader` PE and its reusable core `pmc_pdi_loader` |
 | `sus/data_streamer_vn.sus` | the `DataStreamerVN` PE: DMA stream in, x/y streams to the AIE, z stream back, DMA stream out |
 | `sus/tb/` | SystemVerilog testbenches (Verilator or xsim): fake IPI block + PLM for the loader, behavioural AIE for the streamer |
