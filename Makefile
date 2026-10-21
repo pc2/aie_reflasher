@@ -14,7 +14,8 @@
 #                    the IDCODE of build/reconfigurable_bitstream.pdi
 #   make check-pdi   structural check of the partial PDIs
 #   make host        build/reflash-aie-loader and build/vector-norm
-#   make all         codegen + host (everything that needs neither Vivado nor Vitis)
+#   make all         everything: host tools and partial PDIs, which pulls in codegen, the AIE
+#                    archives, IP packaging + import and the bitstream when they are missing
 #
 # Every target carries its full dependency chain, so nothing relies on checked-in build
 # products: pdi -> bitstream -> IP zips + job file -> AIE archive -> aie/src, codegen -> sus/.
@@ -72,7 +73,7 @@ TAPASCO_LDLIBS   := $(TAPASCO_LIB) -lpthread -ldl -lm -lrt -lutil
 
 .PHONY: all codegen sim sim-xsim package link_plugin aie jobfile bitstream pdi check-pdi host clean
 
-all: codegen host
+all: host pdi
 
 # ---------------------------------------------------------------- PE (SUS -> SystemVerilog)
 codegen: $(CODEGEN) $(CODEGEN_VN)
