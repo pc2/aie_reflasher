@@ -31,7 +31,7 @@ module DataStreamerVN {
     // ---------------------------------------------------------------- Tapasco control
     tapasco_ctrl_slave#(NUM_INPUT_REGS: 1, ADDR_WIDTH: CTRL_ADDR_WIDTH, AXI_WIDTH: CTRL_AXI_WIDTH) ctrl
 
-    input  int#(FROM: 0, TO: 1 << CTRL_ADDR_WIDTH) s_axi_control_awaddr'0
+    input  int#(0..1 << CTRL_ADDR_WIDTH) s_axi_control_awaddr'0
     input  bool                     s_axi_control_awvalid'0
     output bool                     s_axi_control_awready'0 = ctrl.awready
     input  bool[CTRL_AXI_WIDTH]     s_axi_control_wdata'0
@@ -41,7 +41,7 @@ module DataStreamerVN {
     output bool[2]                  s_axi_control_bresp'0   = ctrl.bresp
     output bool                     s_axi_control_bvalid'0  = ctrl.bvalid
     input  bool                     s_axi_control_bready'0
-    input  int#(FROM: 0, TO: 1 << CTRL_ADDR_WIDTH) s_axi_control_araddr'0
+    input  int#(0..1 << CTRL_ADDR_WIDTH) s_axi_control_araddr'0
     input  bool                     s_axi_control_arvalid'0
     output bool                     s_axi_control_arready'0 = ctrl.arready
     output bool[CTRL_AXI_WIDTH]     s_axi_control_rdata'0   = ctrl.rdata
@@ -99,14 +99,14 @@ module DataStreamerVN {
         when x_free & y_free {
             bool[DMA_WIDTH / 2] half
             when upper_half {
-                half = beat[DMA_WIDTH / 2 : DMA_WIDTH]
+                half = beat[DMA_WIDTH / 2 .. DMA_WIDTH]
                 dma_in_fifo.pop()
             } else {
-                half = beat[0 : DMA_WIDTH / 2]
+                half = beat[0 .. DMA_WIDTH / 2]
             }
             for int i in 0..FLOATS_PER_AIE_BEAT {
-                x_data[i * 32 +: 32] = half[(2 * i) * 32 +: 32]
-                y_data[i * 32 +: 32] = half[(2 * i + 1) * 32 +: 32]
+                x_data[i * 32 +.. 32] = half[(2 * i) * 32 +.. 32]
+                y_data[i * 32 +.. 32] = half[(2 * i + 1) * 32 +.. 32]
             }
             x_valid = true
             y_valid = true
@@ -125,16 +125,16 @@ module DataStreamerVN {
     bool _s_aie_last = S_AXIS_AIE_tlast
 
     state bool[AIE_WIDTH][AIE_BEATS_PER_DMA_BEAT] acc
-    state int#(FROM: 0, TO: AIE_BEATS_PER_DMA_BEAT) acc_idx
+    state int#(0..AIE_BEATS_PER_DMA_BEAT) acc_idx
 
     when S_AXIS_AIE_tvalid & dma_out_fifo.may_push {
         acc[acc_idx] = S_AXIS_AIE_tdata
         when acc_idx == AIE_BEATS_PER_DMA_BEAT - 1 {
             bool[DMA_WIDTH] packed
             for int i in 0..AIE_BEATS_PER_DMA_BEAT - 1 {
-                packed[i * AIE_WIDTH +: AIE_WIDTH] = acc[i]
+                packed[i * AIE_WIDTH +.. AIE_WIDTH] = acc[i]
             }
-            packed[(AIE_BEATS_PER_DMA_BEAT - 1) * AIE_WIDTH +: AIE_WIDTH] = S_AXIS_AIE_tdata
+            packed[(AIE_BEATS_PER_DMA_BEAT - 1) * AIE_WIDTH +.. AIE_WIDTH] = S_AXIS_AIE_tdata
             dma_out_fifo.push(packed)
             acc_idx = 0
         } else {
@@ -154,8 +154,8 @@ module DataStreamerVN {
 
     // ---------------------------------------------------------------- run control
     state bool running
-    state int#(FROM: 0, TO: COUNTER_END) outstanding   // result beats still to send
-    state int#(FROM: 0, TO: COUNTER_END) cycles
+    state int#(0..COUNTER_END) outstanding   // result beats still to send
+    state int#(0..COUNTER_END) cycles
 
     when out_valid & M_AXIS_DMA_tready { out_valid = false }
 
@@ -173,7 +173,7 @@ module DataStreamerVN {
         bool[CTRL_AXI_WIDTH] samples = ctrl.input_regs[0]
         running = true
         cycles = 0
-        outstanding = BitsToUInt(samples[4:36])   // samples / 16, truncated to 32 bits like the original
+        outstanding = BitsToUInt(samples[4..36])   // samples / 16, truncated to 32 bits like the original
     }
     when running {
         cycles = (cycles + 1) mod COUNTER_END
