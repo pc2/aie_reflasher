@@ -149,7 +149,7 @@ module DataStreamerVN {
     input  bool                 M_AXIS_DMA_tready'0
     output bool                 M_AXIS_DMA_tvalid'0 = out_valid
     output bool[DMA_WIDTH]      M_AXIS_DMA_tdata'0  = out_data
-    output bool[DMA_WIDTH / 8]  M_AXIS_DMA_tkeep'0  = Repeat(true)
+    output bool[DMA_WIDTH / 8]  M_AXIS_DMA_tkeep'0  = [true ...]
     output bool                 M_AXIS_DMA_tlast'0  = out_last
 
     // ---------------------------------------------------------------- run control
