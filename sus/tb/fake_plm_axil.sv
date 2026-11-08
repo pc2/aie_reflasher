@@ -112,7 +112,7 @@ module fake_plm_axil #(
                     if (ack_early) resp_timer <= PLM_DELAY;   // response comes later
                     else begin
                         ram[(RESP_BUF - MSG_RAM) >> 2]     <= plm_status;
-                        ram[(RESP_BUF - MSG_RAM) >> 2 + 1] <= plm_loader_status;
+                        ram[((RESP_BUF - MSG_RAM) >> 2) + 1] <= plm_loader_status;
                     end
                 end
             end
@@ -120,7 +120,7 @@ module fake_plm_axil #(
             if (resp_timer == 0) begin
                 resp_timer <= -1;
                 ram[(RESP_BUF - MSG_RAM) >> 2]     <= plm_status;
-                ram[(RESP_BUF - MSG_RAM) >> 2 + 1] <= plm_loader_status;
+                ram[((RESP_BUF - MSG_RAM) >> 2) + 1] <= plm_loader_status;
             end
         end
     end

@@ -1,295 +1,28 @@
-// AI Engine partial-PDI loader for the VCK5000 under Tapasco.
+// AIEPdiLoader: Tapasco PE that exercises the PDI-Loader platform feature from the host.
 //
-// pmc_pdi_loader: reusable core. Given the PS physical address of a partial PDI in
-// card DDR and an IPI channel n (0..5, chosen per request), it performs the Versal IPI
-// handshake with the PLM over an AXI4-Lite master that reaches the LPD (S_AXI_LPD):
-// XilLoader LOAD_SUBSYSTEM_PDI {0x030701, 0xF (DDR), addr_hi, addr_lo}, ring
-// IPI<n>.TRIG, wait for IPI<n>.OBS to clear, read the two response words. The PLM then executes the AIE CDOs,
-// including the NPI writes at 0xF70A0000 that only the PMC may perform.
+// The actual loading is done by Tapasco's PDILoader core (toolflow/vivado/common/ip/PDILoader, the
+// `PDI-Loader` feature instantiates one per PE interface and wires it to the CIPS S_AXI_LPD port).
+// This PE only forwards a Tapasco job to the loader over its PDILoad master interface
+// (M_PDI_LOAD: a start handshake with the PDI's PS address, a finish handshake with the verdict)
+// and turns the finish into the job's return value. The IPI channel and the timeout are
+// properties of the feature, not of the PE.
 //
-// AIEPdiLoader: Tapasco PE around it (tapasco_ctrl_slave + ipi_lpd_interface AXI4-Full master).
-//
-// Register facts (embeddedsw ipipsu driver, PLM xplmi_ipi.c, ATF plat_ipi.h):
-//   IPI<n> regs  0xFF330000 + n*0x10000 : TRIG +0x0, OBS +0x4
-//   bit masks    PMC 0x2 ; buffer index PMC 1, IPI<n> 2+n
-//   message RAM  0xFF3F0000 + src_idx*0x200 + dst_idx*0x40, response at +0x20
-//   request  IPI<n>->PMC : 0xFF3F0000 + (2+n)*0x200 + 1*0x40   (slot "from n, to PMC")
-//   response PMC->IPI<n> : the same slot + 0x20. xipipsu_buf.c computes RESP as
-//                          Dest*0x200 + Src*0x40 + 0x20 with Src = PMC, Dest = n, i.e. the
-//                          responder answers inside the requester's slot. (First hardware
-//                          run returned the sentinel because the PE read 0x200+(2+n)*0x40+0x20,
-//                          which is where the PMC would get answers to messages IT sends to n.)
-//   IPI6 and PMC_NOBUF have no message buffers, so only channels 0..5 are usable.
-//   IPI5 is the PLM's "xsdb master": it skips the subsystem lookup for that channel,
-//   which makes it the safe choice on a design without isolation configuration.
-
-module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
-    gen int AXI_WIDTH = 32
-
-    axi4_lite_writer #(AXI_WIDTH, ADDR_WIDTH) writer
-    axi4_lite_reader #(AXI_WIDTH, ADDR_WIDTH) reader
-
-    domain axi4_lite
-    output int#(0..1 << ADDR_WIDTH)    awaddr'0= writer.awaddr
-    output bool                                  awvalid'0 = writer.awvalid
-    input  bool                                  awready
-    output bool[AXI_WIDTH]                       wdata'0   = writer.wdata
-    output bool[AXI_WIDTH / 8]                   wstrb'0   = writer.wstrb
-    output bool                                  wvalid'0  = writer.wvalid
-    input  bool                                  wready
-    input  bool[2]                               bresp
-    input  bool                                  bvalid
-    output bool                                  bready'0  = writer.bready
-    writer.awready = awready
-    writer.wready = wready
-    writer.bresp = bresp
-    writer.bvalid = bvalid
-
-    output int#(0..1 << ADDR_WIDTH)    araddr'0= reader.araddr
-    output bool                                  arvalid'0 = reader.arvalid
-    input  bool                                  arready
-    input  bool[AXI_WIDTH]                       rdata
-    input  bool[2]                               rresp
-    input  bool                                  rvalid
-    output bool                                  rready'0  = reader.rready
-    reader.arready = arready
-    reader.rdata = rdata
-    reader.rresp = rresp
-    reader.rvalid = rvalid
-
-    // ---- IPI addresses (channel selected at runtime) ----
-    gen int IPI_REGS  = 4281532416                         // 0xFF330000 = IPI0, +n*0x10000
-    gen int MSG_RAM   = 4282318848                         // 0xFF3F0000
-    gen int MAX_CHANNEL = 5                                // last channel with message buffers
-    gen int NUM_CHANNEL_VALUES = 8                         // 3-bit field
-
-    gen bool[32] CMD_LOAD_PDI = 32'h00030701  // len 3, XilLoader (7), LOAD_SUBSYSTEM_PDI (1)
-    gen bool[32] PDI_SRC_DDR  = 32'h0000000F
-    gen bool[32] SENTINEL     = 32'hDEADBEEF
-    gen bool[32] PMC_MASK     = 32'h00000002
-
-    // ---- sequencer ----
-    // step: 0..3 write request words, 4 read back word 0, 5 write sentinel into the
-    // response buffer, 6 read OBS once (PMC bit must be clear: no stale request),
-    // 7 write TRIG, 8 poll OBS until the PMC bit clears, 9 poll response[0] until it is no
-    // longer the sentinel (the PLM may clear OBS when it queues the command and write the
-    // response only when the load has finished), 10 read response[1]
-    gen int S_IDLE = 0
-    gen int S_WRITE = 1      // issue the write of the current step
-    gen int S_WRITE_WAIT = 2 // wait for its BRESP
-    gen int S_READ = 3       // issue the read of the current step
-    gen int S_READ_WAIT = 4  // wait for RDATA, decide
-    gen int S_DONE = 5
-    gen int NUM_STATES = 6
-    gen int NUM_STEPS = 11
-
-    gen int ERR_NONE = 0
-    gen int ERR_WRITE_RESP = 1  // BRESP != OKAY
-    gen int ERR_READ_RESP = 2   // RRESP != OKAY
-    gen int ERR_TIMEOUT = 3     // readback or OBS never matched
-    gen int ERR_PLM = 4         // PLM answered with a non-zero status
-    gen int ERR_BUSY = 5        // OBS already set before TRIG: a previous request was never acked
-    gen int ERR_CHANNEL = 6     // requested IPI channel > 5 (no message buffer)
-    gen int NUM_ERRS = 7
-
-    domain user
-    state int#(0..NUM_STATES) cur_state
-    state int#(0..NUM_STEPS) step
-    state int#(0..TIMEOUT_CYCLES + 1) timer
-    state bool[64] pdi_addr
-    state int#(0..NUM_CHANNEL_VALUES) ipi_channel
-    state bool[32] plmi_status
-    state bool[32] loader_status
-    state int#(0..NUM_ERRS) err
-
-    output bool busy = cur_state != S_IDLE
-
-    // cmd_word: IPI request word 0. 0 selects LOAD_SUBSYSTEM_PDI; anything else is sent
-    // verbatim (e.g. 0x010100 = XilPlmi FEATURES, a harmless ping that only tests the path).
-    // channel: IPI channel 0..5 to send on (5 = xsdb master, see header).
-    state bool[32] cmd
-    action start : bool[64] pdi_ps_addr, bool[32] cmd_word, int#(0..NUM_CHANNEL_VALUES) channel {
-        pdi_addr = pdi_ps_addr
-        ipi_channel = channel
-        when BitsToUInt(cmd_word) == 0 {
-            cmd = CMD_LOAD_PDI
-        } else {
-            cmd = cmd_word
-        }
-        plmi_status = 32'h00000000
-        loader_status = 32'h00000000
-        timer = 0
-        step = 0
-        when channel > MAX_CHANNEL {
-            err = ERR_CHANNEL
-            cur_state = S_DONE
-        } else {
-            err = ERR_NONE
-            cur_state = S_WRITE
-        }
-    }
-
-    // per-request addresses
-    int#(IPI_REGS..IPI_REGS + NUM_CHANNEL_VALUES * 65536) IPI_TRIG = IPI_REGS + ipi_channel * 65536
-    int#(IPI_REGS..IPI_REGS + NUM_CHANNEL_VALUES * 65536 + 4) IPI_OBS = IPI_TRIG + 4
-    int#(MSG_RAM..MSG_RAM + 8192) REQ_BUF  = MSG_RAM + (2 + ipi_channel) * 512 + 64       // -> PMC (idx 1)
-    int#(MSG_RAM..MSG_RAM + 8256) RESP_BUF = REQ_BUF + 32                                 // PMC -> us: our slot + 0x20
-
-    // cycles: clocks from start to done (saturates at TIMEOUT_CYCLES on error 3)
-    trigger done : bool ok, int#(0..NUM_ERRS) error_code, bool[32] plmi, bool[32] loader, int#(0..TIMEOUT_CYCLES + 1) cycles
-
-    // what each step does
-    bool step_is_write = step == 0 | step == 1 | step == 2 | step == 3 | step == 5 | step == 7
-    int#(0..1 << ADDR_WIDTH) step_addr
-    bool[32] step_wdata
-    when step == 0 {
-        step_addr = REQ_BUF
-        step_wdata = cmd
-    } else when step == 1 {
-        step_addr = REQ_BUF + 4
-        step_wdata = PDI_SRC_DDR
-    } else when step == 2 {
-        step_addr = REQ_BUF + 8
-        step_wdata = pdi_addr[32..64]
-    } else when step == 3 {
-        step_addr = REQ_BUF + 12
-        step_wdata = pdi_addr[0..32]
-    } else when step == 4 {
-        step_addr = REQ_BUF
-        step_wdata = 32'h00000000
-    } else when step == 5 {
-        step_addr = RESP_BUF
-        step_wdata = SENTINEL
-    } else when step == 6 {
-        step_addr = IPI_OBS
-        step_wdata = 32'h00000000
-    } else when step == 7 {
-        step_addr = IPI_TRIG
-        step_wdata = PMC_MASK
-    } else when step == 8 {
-        step_addr = IPI_OBS
-        step_wdata = 32'h00000000
-    } else when step == 9 {
-        step_addr = RESP_BUF
-        step_wdata = 32'h00000000
-    } else {
-        step_addr = RESP_BUF + 4
-        step_wdata = 32'h00000000
-    }
-
-    // timeout only while something is in flight
-    when cur_state != S_IDLE & cur_state != S_DONE {
-        when timer == TIMEOUT_CYCLES {
-            err = ERR_TIMEOUT
-            cur_state = S_DONE
-        } else {
-            timer = IntNarrow#(FROM: 0, TO: TIMEOUT_CYCLES + 1)(timer + 1)
-        }
-    }
-
-    when cur_state == S_WRITE & writer.may_write {
-        writer.write(step_addr, step_wdata, 4'b1111)
-        cur_state = S_WRITE_WAIT
-    }
-    when writer.write_resp_available : bool[2] resp {
-        writer.take_write_resp()
-        when cur_state == S_WRITE_WAIT {
-            when resp[0] | resp[1] { // BRESP/RRESP != OKAY
-                err = ERR_WRITE_RESP
-                cur_state = S_DONE
-            } else {
-                step = IntNarrow#(FROM: 0, TO: NUM_STEPS)(step + 1)
-                cur_state = S_READ // S_READ re-dispatches to S_WRITE when the next step is a write
-            }
-        }
-    }
-
-    when cur_state == S_READ & reader.may_read {
-        when step_is_write {
-            cur_state = S_WRITE
-        } else {
-            reader.read(step_addr)
-            cur_state = S_READ_WAIT
-        }
-    }
-    when reader.read_available : bool[32] read_data, bool[2] resp {
-        reader.take_read()
-        when cur_state == S_READ_WAIT {
-            when resp[0] | resp[1] { // BRESP/RRESP != OKAY
-                err = ERR_READ_RESP
-                cur_state = S_DONE
-            } else when step == 4 {
-                // message RAM really reachable? re-read until our header shows up
-                when BitsToUInt(read_data) == BitsToUInt(cmd) {
-                    step = 5
-                    cur_state = S_WRITE
-                } else {
-                    cur_state = S_READ
-                }
-            } else when step == 6 {
-                // stale request pending at the PMC? then the PLM is not servicing this channel
-                when read_data[1] {
-                    err = ERR_BUSY
-                    cur_state = S_DONE
-                } else {
-                    step = 7
-                    cur_state = S_WRITE
-                }
-            } else when step == 8 {
-                // PLM acks by clearing the PMC bit of our OBS register
-                when !read_data[1] {
-                    step = 9
-                    cur_state = S_READ
-                } else {
-                    cur_state = S_READ
-                }
-            } else when step == 9 {
-                // response written? the sentinel is replaced by the PLMI status
-                when BitsToUInt(read_data) != BitsToUInt(SENTINEL) {
-                    plmi_status = read_data
-                    step = 10
-                }
-                cur_state = S_READ
-            } else {
-                loader_status = read_data
-                when BitsToUInt(plmi_status) != 0 {
-                    err = ERR_PLM
-                }
-                cur_state = S_DONE
-            }
-        }
-    }
-
-    when cur_state == S_DONE {
-        done(err == ERR_NONE, err, plmi_status, loader_status, timer)
-        cur_state = S_IDLE
-    }
-
-    domain reset
-    action rst {
-        reader.rst()
-        writer.rst()
-        cur_state = S_IDLE
-        step = 0
-        timer = 0
-        err = ERR_NONE
-        ipi_channel = 0
-    }
-}
+// Registers (tapasco_ctrl_slave): 0x00 CTRL, 0x10 return value,
+//   0x20 PDI_ADDRESS  PS physical address of the partial PDI (0x100_0000_0000 + Tapasco device offset)
+// Return value: [0..32] PLMI status (0 = success) or 0xFFFFFF00|error for loader errors
+//   (1 write response, 2 read response, 3 timeout, 4 PLM status != 0, 5 channel busy),
+//   [32..64] XilLoader status when the PLM reported an error (4), otherwise the cycles from the
+//   accepted start to the finish, counted here.
 
 module AIEPdiLoader {
     clock aclk
     input bool aresetn
 
-    gen int AXI_WIDTH = 32
     gen int CTRL_AXI_WIDTH = 64
     gen int CTRL_ADDR_WIDTH = 12
-    gen int MEM_ADDR_WIDTH = 64
-    gen int TIMEOUT_CYCLES = 1 << 28    // ~1 s at 250 MHz
 
-    // input_regs[0] = PS physical address of the partial PDI (0x100_0000_0000 + Tapasco offset)
-    // input_regs[1] = IPI channel and command override; see ctrl_bits below
-    tapasco_ctrl_slave#(NUM_INPUT_REGS: 2, ADDR_WIDTH: CTRL_ADDR_WIDTH, AXI_WIDTH: CTRL_AXI_WIDTH) ctrl
+    // input_regs[0] = PDI_ADDRESS
+    tapasco_ctrl_slave#(NUM_INPUT_REGS: 1, ADDR_WIDTH: CTRL_ADDR_WIDTH, AXI_WIDTH: CTRL_AXI_WIDTH) ctrl
 
     domain axi_control
     input  int#(0..1 << CTRL_ADDR_WIDTH)    s_axi_control_awaddr
@@ -322,80 +55,46 @@ module AIEPdiLoader {
     domain tapasco_intr
     output bool intr = ctrl.intr
 
-    pmc_pdi_loader #(ADDR_WIDTH: MEM_ADDR_WIDTH, TIMEOUT_CYCLES: TIMEOUT_CYCLES) loader
+    // ---------------------------------------------------------------- PDILoad master
+    // Port names = the logical names of pc2.uni-paderborn.de:lennart:PDILoad_rtl:1.0 in lower case,
+    // so the IP packager infers the interface (tapasco/pack_pdi_loader_kernel.tcl checks that).
+    domain pdi_load
+    output bool     M_PDI_LOAD_start_valid'0
+    input  bool     M_PDI_LOAD_start_ready'0
+    output bool[64] M_PDI_LOAD_start_addr'0  = ctrl.input_regs[0]
+    input  bool     M_PDI_LOAD_finish_valid'0
+    output bool     M_PDI_LOAD_finish_ready'0 = true   // a finish is always taken at once
+    input  bool[8]  M_PDI_LOAD_finish_error'0
+    input  bool[32] M_PDI_LOAD_finish_status'0
+    input  bool[32] M_PDI_LOAD_finish_loader_status'0
 
-    // input_regs[1] layout: [0..3] IPI channel 0..5 (host default 2; 5 = xsdb master),
-    //                       [32..64] IPI command word override (0 = LOAD_SUBSYSTEM_PDI)
-    bool[64] ctrl_bits = ctrl.input_regs[1]
-
-    // AXI4-Full master: single-beat transactions wrapped around the AXI4-Lite core,
-    // 64-bit address, 32-bit data, no ID signals. Connect to the CIPS S_AXI_LPD port
-    // directly, never through the NoC. AxPROT = 0 (secure, unprivileged, data) and
-    // AxCACHE = 0 (device) are fixed: verified on hardware 2026-10-20.
-    domain ipi_lpd_interface
-    output int#(0..1 << MEM_ADDR_WIDTH) ipi_lpd_interface_awaddr'0   = loader.awaddr
-    output int#(0..256)                 ipi_lpd_interface_awlen'0    = 0
-    output int#(0..8)                   ipi_lpd_interface_awsize'0   = 2      // 4 bytes
-    output bool[2]                                ipi_lpd_interface_awburst'0  = 2'b01  // INCR
-    output bool                                   ipi_lpd_interface_awlock'0   = false
-    output bool[4]                                ipi_lpd_interface_awcache'0  = 4'b0000
-    output bool[3]                                ipi_lpd_interface_awprot'0   = 3'b000
-    output int#(0..16)                  ipi_lpd_interface_awqos'0    = 0
-    output int#(0..16)                  ipi_lpd_interface_awregion'0 = 0
-    output bool                                   ipi_lpd_interface_awvalid'0  = loader.awvalid
-    input  bool                                   ipi_lpd_interface_awready'0
-    output bool[AXI_WIDTH]                        ipi_lpd_interface_wdata'0    = loader.wdata
-    output bool[AXI_WIDTH / 8]                    ipi_lpd_interface_wstrb'0    = loader.wstrb
-    output bool                                   ipi_lpd_interface_wlast'0    = true
-    output bool                                   ipi_lpd_interface_wvalid'0   = loader.wvalid
-    input  bool                                   ipi_lpd_interface_wready'0
-    input  bool[2]                                ipi_lpd_interface_bresp'0
-    input  bool                                   ipi_lpd_interface_bvalid'0
-    output bool                                   ipi_lpd_interface_bready'0   = loader.bready
-    loader.awready = ipi_lpd_interface_awready
-    loader.wready  = ipi_lpd_interface_wready
-    loader.bresp   = ipi_lpd_interface_bresp
-    loader.bvalid  = ipi_lpd_interface_bvalid
-
-    output int#(0..1 << MEM_ADDR_WIDTH) ipi_lpd_interface_araddr'0   = loader.araddr
-    output int#(0..256)                 ipi_lpd_interface_arlen'0    = 0
-    output int#(0..8)                   ipi_lpd_interface_arsize'0   = 2
-    output bool[2]                                ipi_lpd_interface_arburst'0  = 2'b01
-    output bool                                   ipi_lpd_interface_arlock'0   = false
-    output bool[4]                                ipi_lpd_interface_arcache'0  = 4'b0000
-    output bool[3]                                ipi_lpd_interface_arprot'0   = 3'b000
-    output int#(0..16)                  ipi_lpd_interface_arqos'0    = 0
-    output int#(0..16)                  ipi_lpd_interface_arregion'0 = 0
-    output bool                                   ipi_lpd_interface_arvalid'0  = loader.arvalid
-    input  bool                                   ipi_lpd_interface_arready'0
-    input  bool[AXI_WIDTH]                        ipi_lpd_interface_rdata'0
-    input  bool[2]                                ipi_lpd_interface_rresp'0
-    input  bool                                   ipi_lpd_interface_rlast'0    // always 1 for single beats, ignored
-    input  bool                                   ipi_lpd_interface_rvalid'0
-    output bool                                   ipi_lpd_interface_rready'0   = loader.rready
-    loader.arready = ipi_lpd_interface_arready
-    loader.rdata   = ipi_lpd_interface_rdata
-    loader.rresp   = ipi_lpd_interface_rresp
-    loader.rvalid  = ipi_lpd_interface_rvalid
-
+    // A launch holds the start until the loader takes it (it is busy with the previous job otherwise)
+    state bool start_pending
     when ctrl.start {
-        loader.start(ctrl.input_regs[0], ctrl_bits[32..64], BitsToUInt(ctrl_bits[0..3]))
+        start_pending = true
+    }
+    M_PDI_LOAD_start_valid = start_pending
+    state int#(0..1 << 32) cycles
+    when start_pending & M_PDI_LOAD_start_ready {
+        start_pending = false
+        cycles = 0
+    }
+    when !start_pending {
+        cycles = (cycles + 1) mod (1 << 32)
     }
 
-    // Return value: [0..32] PLMI status (0 = success) or 0xFFFFFF00|err for local errors,
-    //               [32..64] XilLoader status when the PLM reported an error (err 4),
-    //                       otherwise the handshake length in design clock cycles
-    when loader.done : bool ok, int#(0..7) error_code, bool[32] plmi, bool[32] loader_st, int#(0..TIMEOUT_CYCLES + 1) cycles {
+    when M_PDI_LOAD_finish_valid {
+        int#(0..256) error_code = BitsToUInt(M_PDI_LOAD_finish_error)
         bool[64] result
         when error_code == 0 | error_code == 4 {
-            result[0..32] = plmi
+            result[0..32] = M_PDI_LOAD_finish_status
         } else {
             bool[32] local_err = 32'hFFFFFF00
-            local_err[0..8] = UIntToBits(error_code)
+            local_err[0..8] = M_PDI_LOAD_finish_error
             result[0..32] = local_err
         }
         when error_code == 4 {
-            result[32..64] = loader_st
+            result[32..64] = M_PDI_LOAD_finish_loader_status
         } else {
             result[32..64] = UIntToBits(cycles)
         }
@@ -403,7 +102,7 @@ module AIEPdiLoader {
     }
 
     when !aresetn {
-        loader.rst()
         ctrl.rst()
+        start_pending = false
     }
 }

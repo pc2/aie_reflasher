@@ -32,7 +32,7 @@
       }
   },
   {
-    "Feature": "aie_reflasher_plugin",
-    "Properties": { "ila": "false" }
+    "Feature": "PDI-Loader",
+    "Properties": { "ipi_channel": "2", "ila": "false" }
   } ]
 } ]

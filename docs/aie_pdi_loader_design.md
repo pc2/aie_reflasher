@@ -1,5 +1,15 @@
 # AIEPdiLoader: plan for the dedicated AIE reflash PE
 
+> Historical: this is the design and bring-up record of the loader while it was a self-contained PE
+> with its own platform plugin. The core (`pmc_pdi_loader`) has since moved into Tapasco, rewritten in
+> SystemVerilog, as the `PDILoader` IP of the `PDI-Loader` feature (`toolflow/vivado/common/ip/PDILoader`,
+> with the `PDILoad` request interface `pc2.uni-paderborn.de:lennart:PDILoad:1.0`), the `AIEPdiLoader` PE
+> here is now a thin Tapasco front end for it (`sus/aie_pdi_loader.sus`), the IPI channel and the
+> timeout are parameters of the core set from the feature's properties, the command-word override
+> (`IPI_CONFIG`, the FEATURES ping) is gone, and the testbench runs the PE together with that core
+> (`sus/tb/run_xsim.sh`). The handshake, the step table, the error codes and the hardware findings below
+> are unchanged.
+
 Replaces the earlier CDO-interpreting PL core (see `docs/background.md`) with a PE that does one thing: hand a
 partial PDI in card DDR to the PLM over IPI and report the PLM's verdict. The PLM does
 the AIE configuration. Written in SUS, same library modules and port names as before so

@@ -3,17 +3,24 @@
 Reconfigure **only the AI Engine array** of a running Tapasco VCK5000 design, in a few tens of
 milliseconds end to end, without touching the PL, the NoC, the DDR contents or the PCIe link.
 
-A small PL processing element (`AIEPdiLoader`, written in [SUS](https://github.com/pc2/sus-compiler))
-hands an AIE-only *partial PDI* that sits in card DDR to the Platform Loader and Manager
+Tapasco's `PDI-Loader` platform feature (Versal, in `toolflow/vivado/platform/versal/plugins/pdi_loader.tcl`
+of Tapasco) lets a PE load a PDI at runtime: the PE exposes a master of the `PDILoad` interface (a start
+handshake with the PDI's DDR address, a finish handshake with the verdict), and for every such interface
+the feature instantiates a `PDILoader` core (`toolflow/vivado/common/ip/PDILoader`, written in
+[SUS](https://github.com/pc2/sus-compiler)) that hands the PDI to the Platform Loader and Manager
 (PLM, the firmware running on the Versal PMC) over an Inter-Processor Interrupt (IPI). The PLM
 then does exactly what it did for the AIE image at boot: parse the PDI, run the CDOs, load the
-tile ELFs, release the cores. The host side is one Tapasco job: DMA the PDI, launch the PE,
-read back the PLM's verdict.
+tile ELFs, release the cores. The feature and the core were developed here; this repository is now
+their test case and example: the `AIEPdiLoader` PE just forwards a Tapasco job to the loader, so the
+host side is one job: DMA the PDI, launch the PE, read back the PLM's verdict.
 
 ```
-host                         card DDR                        PL                        PS / PMC
+host                         card DDR                        PL                                PS / PMC
 reflash-aie-loader --DMA-->  aie_partial.pdi
                    --launch----------------------------->  AIEPdiLoader PE
+                                                             | PDILoad start (PDI address)
+                                                             v
+                                                           PDILoader (PDI-Loader feature)
                                                              | 4-word IPI request + TRIG
                                                              |  (S_AXI_LPD, 0xFF33xxxx / 0xFF3F0xxx)
                                                              v
@@ -23,14 +30,15 @@ reflash-aie-loader --DMA-->  aie_partial.pdi
                                                              v
                                                            AIE array reconfigured, OBS cleared,
                                                              status in the IPI response buffer
+                                                           PDILoader --PDILoad finish (error, status)--> PE
                    <--return value (PLMI status, cycles)--  PE
 ```
 
-This repository contains everything needed to reproduce the setup: the reflasher PE, the
+This repository contains everything needed to reproduce the setup: the `AIEPdiLoader` PE, the
 `DataStreamerVN` example PE that feeds the AI Engine (a SUS port of the Bluespec PE from
 esa-tu-darmstadt/tapasco-examples, so no Bluespec compiler is needed), simulation testbenches
-for both, the Tapasco platform plugin, the host tools, the partial-PDI builder and the
-Vector-Norm AIE graph. The graph is compiled twice (`build/libadf_a.a`, `build/libadf_b.a`); the
+for both (the loader one simulates the PE together with Tapasco's `PDILoader` core against a model
+of the IPI block and the PLM), the host tools, the partial-PDI builder and the Vector-Norm AIE graph. The graph is compiled twice (`build/libadf_a.a`, `build/libadf_b.a`); the
 variants differ only in a `* 2.0` on the output, so a successful reflash is visible from the
 host.
 
@@ -39,12 +47,11 @@ host.
 | Path | Contents |
 |---|---|
 | `Makefile` | every build step (see below); no CMake. `make clean` removes all generated files, the bitstream copy included |
-| `sus/aie_pdi_loader.sus` | the `AIEPdiLoader` PE and its reusable core `pmc_pdi_loader` |
+| `sus/aie_pdi_loader.sus` | the `AIEPdiLoader` PE: a Tapasco control slave in front of a `PDILoad` master interface |
 | `sus/data_streamer_vn.sus` | the `DataStreamerVN` PE: DMA stream in, x/y streams to the AIE, z stream back, DMA stream out |
-| `sus/tb/` | SystemVerilog testbenches (Verilator or xsim): fake IPI block + PLM for the loader, behavioural AIE for the streamer |
-| `tapasco/aie_reflasher_plugin.tcl` | Tapasco vck5000 plugin: enables IPI0..6 and `S_AXI_LPD` on the CIPS and wires the PE to it |
-| `tapasco/pack_pdi_loader_kernel.tcl`, `tapasco/pack_data_streamer_vn.tcl` | Vivado IP packaging of the two PEs (register maps) |
-| `tapasco/pdi-loader.json` | Tapasco job file (`@ADF@` is filled in by `make jobfile`) (`DataStreamerVN` + `AIEPdiLoader` + AI-Engine + DMA-Streaming) |
+| `sus/tb/` | SystemVerilog testbenches (Verilator or xsim): fake IPI block + PLM for the PE + loader core, behavioural AIE for the streamer; `run_xsim.sh` runs the loader one headless in xsim |
+| `tapasco/pack_pdi_loader_kernel.tcl`, `tapasco/pack_data_streamer_vn.tcl` | Vivado IP packaging of the two PEs (register maps; the loader PE's `M_PDI_LOAD` interface is inferred from the `PDILoad` definition in Tapasco's `common/ip`) |
+| `tapasco/pdi-loader.json` | Tapasco job file (`@ADF@` is filled in by `make jobfile`) (`DataStreamerVN` + `AIEPdiLoader` + AI-Engine + DMA-Streaming + PDI-Loader) |
 | `host/reflash_aie_loader.cpp` | host tool that performs a reflash |
 | `host/vector_norm.cpp` | host tool that runs the vector-norm example to check which AIE graph is live |
 | `tools/make_aie_pdi.sh` | `libadf.a` to AIE-only partial PDI (bootgen) |
@@ -60,9 +67,10 @@ host.
 
 - Vivado/Vitis 2023.1 (`vivado`, `bootgen`, `aiecompiler`). `aiecompiler` is only needed to
   rebuild the AIE graphs; it reads `XILINX_VITIS` and `PLATFORM_FILE` (the VCK5000 `.xpfm`).
-- A Tapasco checkout and workspace for the `vck5000` platform with the runtime built
-  (`tapasco-build-libs`) and `tapasco-setup.sh` sourced. The Makefile reads
-  `TAPASCO_WORK_DIR` and `TAPASCO_HOME_TOOLFLOW` from it.
+- A Tapasco checkout with the `PDI-Loader` feature (the PDILoad interface definition and the
+  PDILoader core in `toolflow/vivado/common/ip`) and a workspace for the `vck5000` platform with the
+  runtime built (`tapasco-build-libs`) and `tapasco-setup.sh` sourced. The Makefile reads
+  `TAPASCO_WORK_DIR` and `TAPASCO_HOME_TCL` from it.
 - `sus_compiler` 0.6.0 (`cargo install sus_compiler`; the `sus-0.5.0` tag marks the last version for SUS 0.5.0), `verilator` 5.x for simulation.
 - `g++` with C++20, `python3`, `zip`.
 - Clone with submodules: `git clone --recursive <this repo>`.
@@ -75,11 +83,13 @@ On pc2: `source vck5000_modules.sh`.
 
 ```
 make codegen      # sus_compiler -> build/aie_pdi_loader.sv, build/data_streamer_vn.sv
-make sim          # Verilator: 8 loader scenarios against the fake PLM, 5 streamer scenarios
-                  # against a behavioural AIE (random stalls, scale 1 and 2); all must print OK
+make sim          # Verilator: 13 loader scenarios (PE + Tapasco's PDILoader core) against the fake PLM,
+                  # 5 streamer scenarios against a behavioural AIE (random stalls, scale 1 and 2);
+                  # the loader testbench prints ALL OK, every streamer scenario OK
 ```
 
-`make sim-xsim` runs the loader testbench in Vivado's simulator.
+`make sim-xsim` runs the loader testbench headless in Vivado's simulator (`sus/tb/run_xsim.sh`).
+Both take the loader core from `$TAPASCO_HOME_TCL/common/ip/PDILoader/src/PDILoader.sv`.
 
 ### 2. Package the PEs and import them into Tapasco
 
@@ -88,24 +98,31 @@ make package      # Vivado ipx -> build/AIEPdiLoader.zip, build/DataStreamerVN.z
                   # tapasco import ... as 10203 (AIEPdiLoader) / 10204 (DataStreamerVN)
 ```
 
-### 3. Install the platform plugin
+### 3. The PDI-Loader feature
+
+Nothing to install: the feature ships with Tapasco (`documentation/tapasco-features.md` there).
+The job file enables it with
 
 ```
-make plugin       # copies tapasco/aie_reflasher_plugin.tcl to $TAPASCO_HOME_TOOLFLOW/vivado/platform/vck5000/plugins/
+{ "Feature": "PDI-Loader", "Properties": { "ipi_channel": "2", "ila": "false" } }
 ```
 
-The plugin is activated by the `aie_reflasher_plugin` feature in the job file. It
+For every `PDILoad` master interface of a PE it
 
+- instantiates a `PDILoader` core in the host subsystem and connects the PE's interface to it;
+  the core's `IPI_CHANNEL` and `TIMEOUT_CYCLES` parameters come from the `ipi_channel` (further loaders
+  take the next channels) and `timeout_cycles` (default 2^30) properties;
 - enables IPI0..IPI6 on the CIPS. All of them are required: the per-design 2023.1 PLM only
   scans as many IPI interrupt bits as there are IPI instances in the design, so with fewer
   channels present a request on a high channel is dropped silently;
-- enables `S_AXI_LPD` and connects the PE's `ipi_lpd_interface` master to it, since the IPI
-  message RAM is only reachable over the direct PL-to-PS slave ports, not over the NoC;
+- enables `S_AXI_LPD` and connects the loader's `M_AXI_LPD` master to it (through a SmartConnect
+  when there are several loaders), since the IPI message RAM is only reachable over the direct
+  PL-to-PS slave ports, not over the NoC;
 - after Tapasco's address map is built, lets Vivado assign the fixed LPD addresses and checks
-  that `psv_ipi_0..5` and `psv_ipi_buffer` are mapped for the PE.
+  that the loader reaches its `psv_ipi_<n>` block and `psv_ipi_buffer`.
 
-Set `"ila": "true"` in the feature properties to add an AXI ILA on the LPD port; the probe
-file is written next to the bitstream.
+Set `"ila": "true"` in the feature properties to add an AXI ILA on the LPD port (needs the Debug
+feature); the probe file is written next to the bitstream.
 
 ### 4. AIE graphs
 
@@ -129,7 +146,7 @@ make bitstream                         # tapasco --jobsFile build/pdi-loader.jso
 
 Tapasco composes the design under `$TAPASCO_WORK_DIR/compose/axi4mm/vck5000/`; the target
 copies the resulting PDI to `build/reconfigurable_bitstream.pdi`, plus `build/debug_probes.ltx`
-when the plugin's ILA was enabled. Load it with
+when the feature's ILA was enabled. Load it with
 `tapasco-load-bitstream build/reconfigurable_bitstream.pdi`. The IP zips and the job file are
 order-only prerequisites: a missing bitstream is built, but changing them later does not
 restart the multi-hour build on its own (`make -B bitstream` does).
@@ -164,16 +181,15 @@ build/reflash-aie-loader build/libadf_a.pdi
 build/vector-norm                      # back to A
 ```
 
-A successful run prints the IPI channel, the PLMI status (`lo=0x0`) and the handshake
-length in design clock cycles and microseconds. `--ipi N` picks the IPI channel (default 2;
-5 is the channel xsdb uses, avoid it while a JTAG session is open). `--ping` sends the
-harmless XilPlmi FEATURES query instead of a load to prove the path.
+A successful run prints the PLMI status (`lo=0x0`) and the handshake length in design clock
+cycles and microseconds. The IPI channel is fixed in the design (`ipi_channel` of the feature,
+2 here; 5 is the channel xsdb uses, avoid it while a JTAG session is open).
 
 ### Return value and errors
 
 The PE returns one 64-bit word: `[31:0]` is the PLMI status (0 = success) or
-`0xFFFFFF00 | code` for a PE-local error, `[63:32]` is the XilLoader status when the PLM
-reported an error and the cycle count otherwise.
+`0xFFFFFF00 | code` for a loader error (`FINISH_ERROR` of the PDILoad interface), `[63:32]` is
+the XilLoader status when the PLM reported an error and the cycle count otherwise.
 
 | code | meaning |
 |---|---|
@@ -181,14 +197,13 @@ reported an error and the cycle count otherwise.
 | 3 | timeout, the PLM never acknowledged: usually a channel the PLM is not servicing |
 | 4 | PLM reported a non-zero status; decode `[63:32]` with `xloader.h` of embeddedsw 2023.1 |
 | 5 | the channel still holds an unacknowledged earlier request |
-| 6 | IPI channel > 5 (IPI6 has no message buffer) |
 
 The PLM's own log is visible from xsdb (`plm log` on the DPC target) if the micro-USB cable
 is connected.
 
 ## How the handshake works
 
-For channel n the PE uses the IPI registers at `0xFF330000 + n * 0x10000` and the message RAM
+For channel n the loader uses the IPI registers at `0xFF330000 + n * 0x10000` and the message RAM
 slot `0xFF3F0000 + (2 + n) * 0x200 + 0x40` (request to the PMC) with the response in the
 same slot at `+0x20`. It writes the four request words `{0x030701, 0xF, addr_hi, addr_lo}`
 (XilLoader `LOAD_SUBSYSTEM_PDI`, source DDR, PDI address as the PMC sees it:
@@ -196,7 +211,8 @@ same slot at `+0x20`. It writes the four request words `{0x030701, 0xF, addr_hi,
 reachable, plants a sentinel in the response slot, writes the PMC bit into TRIG, polls OBS until the
 PLM clears it, then polls the response slot until the sentinel has been replaced by the
 PLMI status (the PLM acks before it has finished the load). The second word is the
-XilLoader status. Details, the step table and the bring-up log are in
+XilLoader status. The `PDILoad` interface and the core are documented in Tapasco's
+`toolflow/vivado/common/ip/PDILoader/README.md`; the step table and the bring-up log are in
 [docs/aie_pdi_loader_design.md](docs/aie_pdi_loader_design.md); why the PMC has to do this and
 why the earlier PL-only attempt could not are in [docs/background.md](docs/background.md).
 
@@ -221,5 +237,5 @@ results).
 
 ## TODO
 
-- The timeout of the loader PE (`TIMEOUT_CYCLES = 2^28`, about 1 s at 312.5 MHz) was chosen
-  for 100 KB PDIs; multi-MB AIE images may need a larger value.
+- The default timeout of the loader (`timeout_cycles` = 2^30, about 3.4 s at 312.5 MHz) has only
+  been exercised with 100 KB PDIs; multi-MB AIE images may need a larger value in the job file.
