@@ -30,7 +30,7 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     axi4_lite_reader #(AXI_WIDTH, ADDR_WIDTH) reader
 
     domain axi4_lite
-    output int#(FROM: 0, TO: 1 << ADDR_WIDTH)    awaddr'0= writer.awaddr
+    output int#(0..1 << ADDR_WIDTH)    awaddr'0= writer.awaddr
     output bool                                  awvalid'0 = writer.awvalid
     input  bool                                  awready
     output bool[AXI_WIDTH]                       wdata'0   = writer.wdata
@@ -45,7 +45,7 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     writer.bresp = bresp
     writer.bvalid = bvalid
 
-    output int#(FROM: 0, TO: 1 << ADDR_WIDTH)    araddr'0= reader.araddr
+    output int#(0..1 << ADDR_WIDTH)    araddr'0= reader.araddr
     output bool                                  arvalid'0 = reader.arvalid
     input  bool                                  arready
     input  bool[AXI_WIDTH]                       rdata
@@ -93,14 +93,14 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     gen int NUM_ERRS = 7
 
     domain user
-    state int#(FROM: 0, TO: NUM_STATES) cur_state
-    state int#(FROM: 0, TO: NUM_STEPS) step
-    state int#(FROM: 0, TO: TIMEOUT_CYCLES + 1) timer
+    state int#(0..NUM_STATES) cur_state
+    state int#(0..NUM_STEPS) step
+    state int#(0..TIMEOUT_CYCLES + 1) timer
     state bool[64] pdi_addr
-    state int#(FROM: 0, TO: NUM_CHANNEL_VALUES) ipi_channel
+    state int#(0..NUM_CHANNEL_VALUES) ipi_channel
     state bool[32] plmi_status
     state bool[32] loader_status
-    state int#(FROM: 0, TO: NUM_ERRS) err
+    state int#(0..NUM_ERRS) err
 
     output bool busy = cur_state != S_IDLE
 
@@ -108,7 +108,7 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     // verbatim (e.g. 0x010100 = XilPlmi FEATURES, a harmless ping that only tests the path).
     // channel: IPI channel 0..5 to send on (5 = xsdb master, see header).
     state bool[32] cmd
-    action start : bool[64] pdi_ps_addr, bool[32] cmd_word, int#(FROM: 0, TO: NUM_CHANNEL_VALUES) channel {
+    action start : bool[64] pdi_ps_addr, bool[32] cmd_word, int#(0..NUM_CHANNEL_VALUES) channel {
         pdi_addr = pdi_ps_addr
         ipi_channel = channel
         when BitsToUInt(cmd_word) == 0 {
@@ -130,17 +130,17 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
     }
 
     // per-request addresses
-    int#(FROM: IPI_REGS, TO: IPI_REGS + NUM_CHANNEL_VALUES * 65536) IPI_TRIG = IPI_REGS + ipi_channel * 65536
-    int#(FROM: IPI_REGS, TO: IPI_REGS + NUM_CHANNEL_VALUES * 65536 + 4) IPI_OBS = IPI_TRIG + 4
-    int#(FROM: MSG_RAM, TO: MSG_RAM + 8192) REQ_BUF  = MSG_RAM + (2 + ipi_channel) * 512 + 64       // -> PMC (idx 1)
-    int#(FROM: MSG_RAM, TO: MSG_RAM + 8256) RESP_BUF = REQ_BUF + 32                                 // PMC -> us: our slot + 0x20
+    int#(IPI_REGS..IPI_REGS + NUM_CHANNEL_VALUES * 65536) IPI_TRIG = IPI_REGS + ipi_channel * 65536
+    int#(IPI_REGS..IPI_REGS + NUM_CHANNEL_VALUES * 65536 + 4) IPI_OBS = IPI_TRIG + 4
+    int#(MSG_RAM..MSG_RAM + 8192) REQ_BUF  = MSG_RAM + (2 + ipi_channel) * 512 + 64       // -> PMC (idx 1)
+    int#(MSG_RAM..MSG_RAM + 8256) RESP_BUF = REQ_BUF + 32                                 // PMC -> us: our slot + 0x20
 
     // cycles: clocks from start to done (saturates at TIMEOUT_CYCLES on error 3)
-    trigger done : bool ok, int#(FROM: 0, TO: NUM_ERRS) error_code, bool[32] plmi, bool[32] loader, int#(FROM: 0, TO: TIMEOUT_CYCLES + 1) cycles
+    trigger done : bool ok, int#(0..NUM_ERRS) error_code, bool[32] plmi, bool[32] loader, int#(0..TIMEOUT_CYCLES + 1) cycles
 
     // what each step does
     bool step_is_write = step == 0 | step == 1 | step == 2 | step == 3 | step == 5 | step == 7
-    int#(FROM: 0, TO: 1 << ADDR_WIDTH) step_addr
+    int#(0..1 << ADDR_WIDTH) step_addr
     bool[32] step_wdata
     when step == 0 {
         step_addr = REQ_BUF
@@ -150,10 +150,10 @@ module pmc_pdi_loader #(int ADDR_WIDTH, int TIMEOUT_CYCLES) {
         step_wdata = PDI_SRC_DDR
     } else when step == 2 {
         step_addr = REQ_BUF + 8
-        step_wdata = pdi_addr[32:64]
+        step_wdata = pdi_addr[32..64]
     } else when step == 3 {
         step_addr = REQ_BUF + 12
-        step_wdata = pdi_addr[0:32]
+        step_wdata = pdi_addr[0..32]
     } else when step == 4 {
         step_addr = REQ_BUF
         step_wdata = 32'h00000000
@@ -292,7 +292,7 @@ module AIEPdiLoader {
     tapasco_ctrl_slave#(NUM_INPUT_REGS: 2, ADDR_WIDTH: CTRL_ADDR_WIDTH, AXI_WIDTH: CTRL_AXI_WIDTH) ctrl
 
     domain axi_control
-    input  int#(FROM: 0, TO: 1 << CTRL_ADDR_WIDTH)    s_axi_control_awaddr
+    input  int#(0..1 << CTRL_ADDR_WIDTH)    s_axi_control_awaddr
     input  bool                     s_axi_control_awvalid
     output bool                     s_axi_control_awready = ctrl.awready
     input  bool[CTRL_AXI_WIDTH]     s_axi_control_wdata
@@ -302,7 +302,7 @@ module AIEPdiLoader {
     output bool[2]                  s_axi_control_bresp   = ctrl.bresp
     output bool                     s_axi_control_bvalid  = ctrl.bvalid
     input  bool                     s_axi_control_bready
-    input  int#(FROM: 0, TO: 1 << CTRL_ADDR_WIDTH)    s_axi_control_araddr
+    input  int#(0..1 << CTRL_ADDR_WIDTH)    s_axi_control_araddr
     input  bool                     s_axi_control_arvalid
     output bool                     s_axi_control_arready = ctrl.arready
     output bool[CTRL_AXI_WIDTH]     s_axi_control_rdata   = ctrl.rdata
@@ -324,8 +324,8 @@ module AIEPdiLoader {
 
     pmc_pdi_loader #(ADDR_WIDTH: MEM_ADDR_WIDTH, TIMEOUT_CYCLES: TIMEOUT_CYCLES) loader
 
-    // input_regs[1] layout: [0:3] IPI channel 0..5 (host default 2; 5 = xsdb master),
-    //                       [32:64] IPI command word override (0 = LOAD_SUBSYSTEM_PDI)
+    // input_regs[1] layout: [0..3] IPI channel 0..5 (host default 2; 5 = xsdb master),
+    //                       [32..64] IPI command word override (0 = LOAD_SUBSYSTEM_PDI)
     bool[64] ctrl_bits = ctrl.input_regs[1]
 
     // AXI4-Full master: single-beat transactions wrapped around the AXI4-Lite core,
@@ -333,15 +333,15 @@ module AIEPdiLoader {
     // directly, never through the NoC. AxPROT = 0 (secure, unprivileged, data) and
     // AxCACHE = 0 (device) are fixed: verified on hardware 2026-10-20.
     domain ipi_lpd_interface
-    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) ipi_lpd_interface_awaddr'0   = loader.awaddr
-    output int#(FROM: 0, TO: 256)                 ipi_lpd_interface_awlen'0    = 0
-    output int#(FROM: 0, TO: 8)                   ipi_lpd_interface_awsize'0   = 2      // 4 bytes
+    output int#(0..1 << MEM_ADDR_WIDTH) ipi_lpd_interface_awaddr'0   = loader.awaddr
+    output int#(0..256)                 ipi_lpd_interface_awlen'0    = 0
+    output int#(0..8)                   ipi_lpd_interface_awsize'0   = 2      // 4 bytes
     output bool[2]                                ipi_lpd_interface_awburst'0  = 2'b01  // INCR
     output bool                                   ipi_lpd_interface_awlock'0   = false
     output bool[4]                                ipi_lpd_interface_awcache'0  = 4'b0000
     output bool[3]                                ipi_lpd_interface_awprot'0   = 3'b000
-    output int#(FROM: 0, TO: 16)                  ipi_lpd_interface_awqos'0    = 0
-    output int#(FROM: 0, TO: 16)                  ipi_lpd_interface_awregion'0 = 0
+    output int#(0..16)                  ipi_lpd_interface_awqos'0    = 0
+    output int#(0..16)                  ipi_lpd_interface_awregion'0 = 0
     output bool                                   ipi_lpd_interface_awvalid'0  = loader.awvalid
     input  bool                                   ipi_lpd_interface_awready'0
     output bool[AXI_WIDTH]                        ipi_lpd_interface_wdata'0    = loader.wdata
@@ -357,15 +357,15 @@ module AIEPdiLoader {
     loader.bresp   = ipi_lpd_interface_bresp
     loader.bvalid  = ipi_lpd_interface_bvalid
 
-    output int#(FROM: 0, TO: 1 << MEM_ADDR_WIDTH) ipi_lpd_interface_araddr'0   = loader.araddr
-    output int#(FROM: 0, TO: 256)                 ipi_lpd_interface_arlen'0    = 0
-    output int#(FROM: 0, TO: 8)                   ipi_lpd_interface_arsize'0   = 2
+    output int#(0..1 << MEM_ADDR_WIDTH) ipi_lpd_interface_araddr'0   = loader.araddr
+    output int#(0..256)                 ipi_lpd_interface_arlen'0    = 0
+    output int#(0..8)                   ipi_lpd_interface_arsize'0   = 2
     output bool[2]                                ipi_lpd_interface_arburst'0  = 2'b01
     output bool                                   ipi_lpd_interface_arlock'0   = false
     output bool[4]                                ipi_lpd_interface_arcache'0  = 4'b0000
     output bool[3]                                ipi_lpd_interface_arprot'0   = 3'b000
-    output int#(FROM: 0, TO: 16)                  ipi_lpd_interface_arqos'0    = 0
-    output int#(FROM: 0, TO: 16)                  ipi_lpd_interface_arregion'0 = 0
+    output int#(0..16)                  ipi_lpd_interface_arqos'0    = 0
+    output int#(0..16)                  ipi_lpd_interface_arregion'0 = 0
     output bool                                   ipi_lpd_interface_arvalid'0  = loader.arvalid
     input  bool                                   ipi_lpd_interface_arready'0
     input  bool[AXI_WIDTH]                        ipi_lpd_interface_rdata'0
@@ -379,25 +379,25 @@ module AIEPdiLoader {
     loader.rvalid  = ipi_lpd_interface_rvalid
 
     when ctrl.start {
-        loader.start(ctrl.input_regs[0], ctrl_bits[32:64], BitsToUInt(ctrl_bits[0:3]))
+        loader.start(ctrl.input_regs[0], ctrl_bits[32..64], BitsToUInt(ctrl_bits[0..3]))
     }
 
-    // Return value: [0:32] PLMI status (0 = success) or 0xFFFFFF00|err for local errors,
-    //               [32:64] XilLoader status when the PLM reported an error (err 4),
+    // Return value: [0..32] PLMI status (0 = success) or 0xFFFFFF00|err for local errors,
+    //               [32..64] XilLoader status when the PLM reported an error (err 4),
     //                       otherwise the handshake length in design clock cycles
-    when loader.done : bool ok, int#(FROM: 0, TO: 7) error_code, bool[32] plmi, bool[32] loader_st, int#(FROM: 0, TO: TIMEOUT_CYCLES + 1) cycles {
+    when loader.done : bool ok, int#(0..7) error_code, bool[32] plmi, bool[32] loader_st, int#(0..TIMEOUT_CYCLES + 1) cycles {
         bool[64] result
         when error_code == 0 | error_code == 4 {
-            result[0:32] = plmi
+            result[0..32] = plmi
         } else {
             bool[32] local_err = 32'hFFFFFF00
-            local_err[0:8] = UIntToBits(error_code)
-            result[0:32] = local_err
+            local_err[0..8] = UIntToBits(error_code)
+            result[0..32] = local_err
         }
         when error_code == 4 {
-            result[32:64] = loader_st
+            result[32..64] = loader_st
         } else {
-            result[32:64] = UIntToBits(cycles)
+            result[32..64] = UIntToBits(cycles)
         }
         ctrl.finish(result)
     }

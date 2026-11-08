@@ -63,7 +63,7 @@ host.
 - A Tapasco checkout and workspace for the `vck5000` platform with the runtime built
   (`tapasco-build-libs`) and `tapasco-setup.sh` sourced. The Makefile reads
   `TAPASCO_WORK_DIR` and `TAPASCO_HOME_TOOLFLOW` from it.
-- `sus_compiler` 0.4.0 (`cargo install sus_compiler`), `verilator` 5.x for simulation.
+- `sus_compiler` 0.6.0 (`cargo install sus_compiler`; the `sus-0.5.0` tag marks the last version for SUS 0.5.0), `verilator` 5.x for simulation.
 - `g++` with C++20, `python3`, `zip`.
 - Clone with submodules: `git clone --recursive <this repo>`.
 

@@ -5,7 +5,7 @@ partial PDI in card DDR to the PLM over IPI and report the PLM's verdict. The PL
 the AIE configuration. Written in SUS, same library modules and port names as before so
 the Tapasco side changes are small.
 
-## 1. Modules (`sus/aie_pdi_loader.sus`, compiles with sus_compiler 0.4.0)
+## 1. Modules (`sus/aie_pdi_loader.sus`, compiles with sus_compiler 0.6.0)
 
 ### `pmc_pdi_loader #(ADDR_WIDTH, TIMEOUT_CYCLES)` (reusable core)
 
